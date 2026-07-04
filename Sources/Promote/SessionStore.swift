@@ -5,10 +5,9 @@ final class SessionStore: ObservableObject {
     @Published var sessions: [Session] = []
     @Published var selected: String?
     @Published var details: [String: Details] = [:]
-    @Published var colors: [String: String] =
-        UserDefaults.standard.dictionary(forKey: "sessionColors") as? [String: String] ?? [:]
-    @Published var groups: [String: String] =
-        UserDefaults.standard.dictionary(forKey: "sessionGroups") as? [String: String] ?? [:]
+    @Published var colors: [String: String] = Settings.colors
+    @Published var groups: [String: String] = Settings.groups
+    @Published var showCheatSheet = false
 
     let defaultGroup = "Sessions"
 
@@ -38,12 +37,13 @@ final class SessionStore: ObservableObject {
     // MARK: - tmux actions
 
     func refresh() {
-        let out = tmux("list-sessions", "-F", "#S\t#{session_path}") ?? ""
+        // session_path is the start dir and can be stale; active pane path tracks reality
+        let out = tmux("list-sessions", "-F", "#S\t#{pane_current_path}") ?? ""
         var list = out.split(separator: "\n").map { line -> Session in
             let parts = line.split(separator: "\t", maxSplits: 1).map(String.init)
             return Session(name: parts[0], path: parts.count > 1 ? parts[1] : "")
         }
-        let order = UserDefaults.standard.stringArray(forKey: "sessionOrder") ?? []
+        let order = Settings.order
         let rank = { (s: Session) in order.firstIndex(of: s.name) ?? Int.max }
         list = list.enumerated()
             .sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }
@@ -71,10 +71,10 @@ final class SessionStore: ObservableObject {
             groups[new] = g
             saveGroups()
         }
-        var order = UserDefaults.standard.stringArray(forKey: "sessionOrder") ?? []
+        var order = Settings.order
         if let i = order.firstIndex(of: old) {
             order[i] = new
-            UserDefaults.standard.set(order, forKey: "sessionOrder")
+            Settings.order = order
         }
         if selected == old { selected = new }
         refresh()
@@ -116,17 +116,11 @@ final class SessionStore: ObservableObject {
         saveOrder()
     }
 
-    private func saveOrder() {
-        UserDefaults.standard.set(sessions.map(\.name), forKey: "sessionOrder")
-    }
+    private func saveOrder() { Settings.order = sessions.map(\.name) }
 
-    private func saveColors() {
-        UserDefaults.standard.set(colors, forKey: "sessionColors")
-    }
+    private func saveColors() { Settings.colors = colors }
 
-    private func saveGroups() {
-        UserDefaults.standard.set(groups, forKey: "sessionGroups")
-    }
+    private func saveGroups() { Settings.groups = groups }
 
     // MARK: - details (git branch + PR status)
 

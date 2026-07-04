@@ -4,7 +4,7 @@ import SwiftTerm
 // embeds a SwiftTerm terminal attached to one tmux session
 struct TerminalPane: NSViewRepresentable {
     let session: String
-    @AppStorage("fontSize") private var fontSize = 13.0
+    @AppStorage(Settings.fontSizeKey) private var fontSize = 13.0
 
     func makeNSView(context: Context) -> LocalProcessTerminalView {
         let term = LocalProcessTerminalView(frame: .zero)

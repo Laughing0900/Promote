@@ -20,3 +20,12 @@
 - [x] remove tmux-app header
 - [x] add tmux session button
 
+======================
+panel:
+- [ ]: Active agent list
+  - agent session from 
+  - (claude/pi/openCode/codex)
+
+
+======================
+- [x] cheat sheet for tmux (⌘, overlay — app + tmux keys)
