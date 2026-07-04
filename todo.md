@@ -25,7 +25,9 @@ panel:
 - [ ]: Active agent list
   - agent session from 
   - (claude/pi/openCode/codex)
-
+  - agent status (Done, Idle, Block)
 
 ======================
-cheat cheet for tmux
+[x] cheat cheet for tmux
+
+======================
