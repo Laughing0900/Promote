@@ -7,6 +7,7 @@ final class SessionStore: ObservableObject {
     @Published var details: [String: Details] = [:]
     @Published var colors: [String: String] = Settings.colors
     @Published var groups: [String: String] = Settings.groups
+    @Published var showCheatSheet = false
 
     let defaultGroup = "Sessions"
 
