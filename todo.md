@@ -28,4 +28,4 @@ panel:
 
 
 ======================
-cheat cheet for tmux
+- [x] cheat sheet for tmux (⌘, overlay — app + tmux keys)

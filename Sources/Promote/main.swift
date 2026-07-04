@@ -28,6 +28,11 @@ struct ContentView: View {
         }
         .ignoresSafeArea(edges: .bottom) // no bottom margin under panes
         .toolbarBackground(.hidden, for: .windowToolbar) // blend title bar into content
+        .overlay {
+            if store.showCheatSheet {
+                CheatSheetView { store.showCheatSheet = false }
+            }
+        }
         .onAppear {
             store.refresh()
             DispatchQueue.main.async { installTitlebarButtons(store: store) }
@@ -51,6 +56,11 @@ struct TmuxApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("New Session") { store.newSession() }
                     .keyboardShortcut("n", modifiers: .command)
+            }
+            // ⌘, — no Settings scene, so reuse the slot for the cheat sheet
+            CommandGroup(replacing: .appSettings) {
+                Button("Keyboard Shortcuts") { store.showCheatSheet.toggle() }
+                    .keyboardShortcut(",", modifiers: .command)
             }
             CommandMenu("View") {
                 Button("Increase Font Size") { fontSize += 1 }
