@@ -24,36 +24,39 @@ struct SidebarView: View {
 
     var body: some View {
         List(selection: $store.selected) {
+            // no Section: native section separators/spacing are unstylable;
+            // headers and dividers are plain rows we fully control
             ForEach(Array(store.grouped.enumerated()), id: \.element.0) { entry in
                 let group = entry.element.0
-                Section {
-                    if entry.offset > 0 {
-                        Divider()
-                            .selectionDisabled() // plain separator, not a selectable row
-                    }
-                    ForEach(entry.element.1) { s in
-                        row(s)
-                            .tag(s.name)
-                            .contextMenu { menu(s) }
-                            .onDrag { NSItemProvider(object: s.name as NSString) }
-                    }
-                    .onInsert(of: [.utf8PlainText, .plainText]) { index, providers in
-                        providers.first?.loadObject(ofClass: NSString.self) { obj, _ in
-                            guard let name = obj as? String else { return }
-                            DispatchQueue.main.async {
-                                store.handleDrop(name: name,
-                                                 group: group == store.defaultGroup ? nil : group,
-                                                 at: index)
-                            }
+                if entry.offset > 0 {
+                    Divider()
+                        .selectionDisabled()
+                }
+                if group != store.defaultGroup {
+                    Text(group)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .selectionDisabled()
+                }
+                ForEach(entry.element.1) { s in
+                    row(s)
+                        .tag(s.name)
+                        .contextMenu { menu(s) }
+                        .onDrag { NSItemProvider(object: s.name as NSString) }
+                }
+                .onInsert(of: [.utf8PlainText, .plainText]) { index, providers in
+                    providers.first?.loadObject(ofClass: NSString.self) { obj, _ in
+                        guard let name = obj as? String else { return }
+                        DispatchQueue.main.async {
+                            store.handleDrop(name: name,
+                                             group: group == store.defaultGroup ? nil : group,
+                                             at: index)
                         }
                     }
-                } header: {
-                    // default group needs no title
-                    if group != store.defaultGroup { Text(group) }
                 }
             }
         }
-        .padding(.top, 6)
+        // .padding(.top, 6)
         .scrollContentBackground(.hidden)
         .background(
             // full-bleed sidebar background, up under toolbar + traffic lights
@@ -122,7 +125,7 @@ struct SidebarView: View {
                         .foregroundStyle(.secondary)
                 }
                 if let b = store.details[s.name]?.branch {
-                    Label(b, systemImage: "arrow.triangle.branch")
+                    Text("%\(b)")
                         .lineLimit(1)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -160,10 +163,13 @@ struct SidebarView: View {
                 .frame(maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 2)
         .background(
-            RoundedRectangle(cornerRadius: 5)
+            RoundedRectangle(cornerRadius: 8)
                 .fill(hovered == s.name && store.selected != s.name
                       ? Color.primary.opacity(0.08) : Color.clear)
+                // draw over the listRowInsets so hover pill = selection pill width
+                .padding(.horizontal, -8)
         )
         .contentShape(Rectangle())
         .onHover { inside in
@@ -184,8 +190,11 @@ struct SidebarView: View {
                 Button {
                     store.setColor(s.name, hex: entry.hex)
                 } label: {
-                    Label(entry.id, systemImage: "circle.fill")
-                        .foregroundStyle(entry.color)
+                    Label {
+                        Text(entry.id)
+                    } icon: {
+                        Image(nsImage: colorSwatch(NSColor(entry.color)))
+                    }
                 }
             }
             Divider()
@@ -212,6 +221,17 @@ struct SidebarView: View {
     }
 
     // MARK: - helpers
+
+    // menus render SF Symbols as white templates; use a real bitmap for color dots
+    private func colorSwatch(_ color: NSColor) -> NSImage {
+        let img = NSImage(size: NSSize(width: 14, height: 14), flipped: false) { rect in
+            color.setFill()
+            NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
+            return true
+        }
+        img.isTemplate = false
+        return img
+    }
 
     private func shortPath(_ p: String) -> String {
         p.split(separator: "/").suffix(2).joined(separator: "/")
