@@ -8,12 +8,15 @@ final class SessionStore: ObservableObject {
     @Published var colors: [String: String] = Settings.colors
     @Published var groups: [String: String] = Settings.groups
     @Published var showCheatSheet = false
+    @Published var agents: [AgentInfo] = []
 
     let defaultGroup = "Sessions"
 
     // ponytail: serial queue serializes access to prCache, no lock needed
     private let detailsQueue = DispatchQueue(label: "details")
     private var prCache: [String: (Date, PRInfo?)] = [:] // touch only on detailsQueue
+    private var agentWorked: Set<String> = [] // pane ids seen working; touch only on detailsQueue
+    private let agentTools: Set<String> = ["claude", "pi", "opencode", "codex"]
 
     var groupNames: [String] { Set(groups.values).sorted() }
 
@@ -51,6 +54,7 @@ final class SessionStore: ObservableObject {
         if list != sessions { sessions = list }
         if let sel = selected, !list.contains(where: { $0.name == sel }) { selected = nil }
         for s in list { fetchDetails(s) }
+        fetchAgents()
     }
 
     func newSession() {
@@ -121,6 +125,51 @@ final class SessionStore: ObservableObject {
     private func saveColors() { Settings.colors = colors }
 
     private func saveGroups() { Settings.groups = groups }
+
+    // MARK: - agents (panes running an agent CLI)
+
+    private func fetchAgents() {
+        detailsQueue.async { [self] in
+            let now = Date().timeIntervalSince1970
+            let out = tmux("list-panes", "-a", "-F",
+                           "#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{window_activity}") ?? ""
+            let found = out.split(separator: "\n").compactMap { line -> AgentInfo? in
+                let p = line.split(separator: "\t").map(String.init)
+                guard p.count >= 4, let tool = agentTool(p[2]) else { return nil }
+                return AgentInfo(paneId: p[1], session: p[0], tool: tool,
+                                 status: agentStatus(pane: p[1], activity: Double(p[3]) ?? 0, now: now))
+            }
+            agentWorked.formIntersection(Set(found.map(\.paneId)))
+            DispatchQueue.main.async {
+                if self.agents != found { self.agents = found }
+            }
+        }
+    }
+
+    // ponytail: name/pattern match on pane_current_command; agents run via a
+    // wrapper (node, sh) go undetected — walk the process tree if it matters
+    private func agentTool(_ cmd: String) -> String? {
+        if agentTools.contains(cmd) { return cmd }
+        // claude code's process name is its version number, e.g. "2.1.201"
+        if cmd.range(of: #"^\d+\.\d+\.\d+$"#, options: .regularExpression) != nil { return "claude" }
+        return nil
+    }
+
+    // call only on detailsQueue (touches agentWorked)
+    // ponytail: status = sniffing pane tail text + activity age; real fix is
+    // agent-side hooks setting a tmux @status option this just reads
+    private func agentStatus(pane: String, activity: Double, now: Double) -> AgentStatus {
+        let tail = tmux("capture-pane", "-p", "-t", pane, "-S", "-20") ?? ""
+        if tail.contains("Do you want") || tail.contains("Allow command")
+            || tail.contains("(y/n)") || tail.contains("y/N") {
+            return .blocked
+        }
+        if tail.localizedCaseInsensitiveContains("esc to interrupt") || now - activity < 3 {
+            agentWorked.insert(pane)
+            return .working
+        }
+        return agentWorked.contains(pane) ? .done : .idle
+    }
 
     // MARK: - details (git branch + PR status)
 

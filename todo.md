@@ -22,10 +22,10 @@
 
 ======================
 panel:
-- [ ]: Active agent list
-  - agent session from 
-  - (claude/pi/openCode/codex)
-  - agent status (Done, Idle, Block)
+- [x]: Active agent list ("agents" section at sidebar bottom)
+  - [x] agent session from tmux panes (pane_current_command)
+  - [x] (claude/pi/openCode/codex) — claude detected via version-number process name
+  - [x] agent status (Working, Done, Idle, Blocked) — pane-tail sniff + activity age
 
 ======================
 - [x] cheat sheet for tmux (⌘, overlay — app + tmux keys)

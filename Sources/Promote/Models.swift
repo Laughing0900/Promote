@@ -29,6 +29,27 @@ struct Details: Equatable {
     var pr: PRInfo?
 }
 
+enum AgentStatus: String {
+    case working, idle, blocked, done
+    var color: SwiftUI.Color {
+        switch self {
+        case .working: return .yellow
+        case .idle: return .gray
+        case .blocked: return colorFromHex("#DA2C43") ?? .red
+        case .done: return .blue
+        }
+    }
+}
+
+// a tmux pane running an agent CLI (claude/pi/opencode/codex)
+struct AgentInfo: Identifiable, Equatable {
+    let paneId: String
+    let session: String
+    let tool: String
+    let status: AgentStatus
+    var id: String { paneId }
+}
+
 func colorFromHex(_ s: String) -> SwiftUI.Color? {
     guard s.hasPrefix("#"), let v = UInt32(s.dropFirst(), radix: 16) else { return nil }
     return SwiftUI.Color(red: Double((v >> 16) & 0xFF) / 255,
