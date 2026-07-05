@@ -88,8 +88,6 @@ struct SidebarView: View {
                 ForEach(sessions) { session in
                     sessionRow(session)
                         .tag(session.name)
-                        .listRowInsets(EdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 8))
-                        .listRowBackground(Color.clear)
                         .contextMenu { sessionMenu(session) }
                         .onDrag { NSItemProvider(object: session.name as NSString) }
                 }
@@ -135,6 +133,7 @@ struct SidebarView: View {
     private func sessionRow(_ session: Session) -> some View {
         let details = store.details(for: session.name)
         let isSelected = store.selected == session.name
+        let agentStatus = summarizedAgentStatus(for: session.name)
 
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 3) {
@@ -158,7 +157,8 @@ struct SidebarView: View {
                 }
 
                 if let branch = details.branch {
-                    Text(branch)
+                    // Text(branch)
+                    Text(":- \(branch)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -191,15 +191,28 @@ struct SidebarView: View {
 
             Spacer(minLength: 0)
 
-            VStack(spacing: 6) {
-                if cmdHeld, let index = hotkeyIndexBySession[session.name] {
-                    Text("\(index)")
-                        .font(.caption.monospacedDigit().bold())
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Color.primary.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
+            HStack(alignment: .top, spacing: 6) {
+                VStack(alignment: .trailing, spacing: 0) {
+                    if let agentStatus {
+                        Circle()
+                            .fill(agentStatus.color)
+                            .frame(width: 8, height: 8)
+                            .help("Agent: \(agentStatus.title)")
+                    }
+
+                    Spacer(minLength: 0)
+
+                    if (cmdHeld || hoveredSession == session.name),
+                       let index = hotkeyIndexBySession[session.name] {
+                        Text("\(index)")
+                            .font(.caption.monospacedDigit().bold())
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Color.primary.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
+                    }
                 }
+                .frame(maxHeight: .infinity, alignment: .trailing)
 
                 RoundedRectangle(cornerRadius: 2)
                     .fill(store.color(of: session.name) ?? .clear)
@@ -209,7 +222,6 @@ struct SidebarView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 3)
-        .padding(.horizontal, 4)
         .background(
             RoundedRectangle(cornerRadius: 8)
                 .fill(
@@ -217,6 +229,8 @@ struct SidebarView: View {
                         ? Color.primary.opacity(0.08)
                         : Color.clear
                 )
+                // draw over the listRowInsets so hover pill = selection pill width
+                .padding(.horizontal, -8)
         )
         .contentShape(Rectangle())
         .onHover { inside in
@@ -375,6 +389,15 @@ struct SidebarView: View {
         }
     }
 
+    private func summarizedAgentStatus(for sessionName: String) -> AgentStatus? {
+        let statuses = Set(store.agents(for: sessionName).map(\.status))
+        if statuses.contains(.blocked) { return .blocked }
+        if statuses.contains(.working) { return .working }
+        if statuses.contains(.done) { return .done }
+        if statuses.contains(.idle) { return .idle }
+        return nil
+    }
+
     private func commitRename(old: String) {
         let next = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
         editingSession = nil
@@ -386,6 +409,7 @@ struct SidebarView: View {
     }
 
     private func startMonitoringModifiers() {
+        cmdHeld = NSEvent.modifierFlags.contains(.command)
         flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
             cmdHeld = event.modifierFlags.contains(.command)
             return event
@@ -397,6 +421,7 @@ struct SidebarView: View {
             NSEvent.removeMonitor(flagsMonitor)
             self.flagsMonitor = nil
         }
+        cmdHeld = false
     }
 
     // menus render template symbols; use a concrete bitmap swatch for color previews
