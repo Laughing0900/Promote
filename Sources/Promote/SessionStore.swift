@@ -132,10 +132,11 @@ final class SessionStore: ObservableObject {
         detailsQueue.async { [self] in
             let now = Date().timeIntervalSince1970
             let out = tmux("list-panes", "-a", "-F",
-                           "#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{window_activity}") ?? ""
-            let found = out.split(separator: "\n").compactMap { line -> AgentInfo? in
-                let p = line.split(separator: "\t").map(String.init)
-                guard p.count >= 4, let tool = agentTool(p[2]) else { return nil }
+                           "#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{window_activity}\t#{pane_pid}") ?? ""
+            let rows = out.split(separator: "\n").map { $0.split(separator: "\t").map(String.init) }
+            let ps = rows.contains(where: { $0.count >= 5 && wrapperCmds.contains($0[2]) }) ? psSnapshot() : []
+            let found = rows.compactMap { p -> AgentInfo? in
+                guard p.count >= 5, let tool = agentTool(p[2], panePid: p[4], ps: ps) else { return nil }
                 return AgentInfo(paneId: p[1], session: p[0], tool: tool,
                                  status: agentStatus(pane: p[1], activity: Double(p[3]) ?? 0, now: now))
             }
@@ -146,13 +147,34 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    // ponytail: name/pattern match on pane_current_command; agents run via a
-    // wrapper (node, sh) go undetected — walk the process tree if it matters
-    private func agentTool(_ cmd: String) -> String? {
+    // pane_current_command shows the executable name, so node-based CLIs
+    // (pi) report "node" — for those, walk pane descendants in one ps
+    // snapshot and match argv0 against agentTools
+    private let wrapperCmds: Set<String> = ["node", "bun", "sh"]
+
+    private func agentTool(_ cmd: String, panePid: String, ps: [(pid: String, ppid: String, name: String)]) -> String? {
         if agentTools.contains(cmd) { return cmd }
         // claude code's process name is its version number, e.g. "2.1.201"
         if cmd.range(of: #"^\d+\.\d+\.\d+$"#, options: .regularExpression) != nil { return "claude" }
+        guard wrapperCmds.contains(cmd) else { return nil }
+        var frontier = [panePid]
+        while let pid = frontier.popLast() {
+            for p in ps where p.ppid == pid {
+                if agentTools.contains(p.name) { return p.name }
+                frontier.append(p.pid)
+            }
+        }
         return nil
+    }
+
+    // (pid, ppid, argv0 basename) for every process
+    private func psSnapshot() -> [(pid: String, ppid: String, name: String)] {
+        (run("/bin/ps", ["-axo", "pid=,ppid=,args="]) ?? "").split(separator: "\n").compactMap { line in
+            let f = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+            guard f.count >= 3 else { return nil }
+            let argv0 = f[2].split(separator: " ")[0].split(separator: "/").last.map(String.init) ?? ""
+            return (String(f[0]), String(f[1]), argv0)
+        }
     }
 
     // call only on detailsQueue (touches agentWorked)
