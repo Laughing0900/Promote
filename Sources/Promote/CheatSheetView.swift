@@ -1,42 +1,58 @@
 import SwiftUI
 import AppKit
 
+private struct ShortcutRow: Identifiable {
+    let keys: [String]
+    let description: String
+    var id: String { keys.joined(separator: "+") + "|" + description }
+}
+
+private struct ShortcutSection: Identifiable {
+    let title: String
+    let subtitle: String?
+    let rows: [ShortcutRow]
+    var id: String { title }
+}
+
 // ⌘, overlay: app shortcuts + common tmux keys
 struct CheatSheetView: View {
     let dismiss: () -> Void
     @State private var escMonitor: Any?
 
     // ponytail: static table; update manually when keybindings change
-    private let sections: [(String, [(String, String)])] = [
-        ("App", [
-            ("⌘N", "New tmux session"),
-            ("⌘\\", "Split pane right"),
-            ("⌘W", "Close current pane"),
-            ("⌘1–9", "Jump to session (sidebar order)"),
-            ("⌘=", "Increase font size"),
-            ("⌘−", "Decrease font size"),
-            ("⌘0", "Reset font size"),
-            ("⌘,", "Toggle this cheat sheet"),
+    private let sections: [ShortcutSection] = [
+        ShortcutSection(title: "App", subtitle: nil, rows: [
+            ShortcutRow(keys: ["⌘", "N"], description: "New tmux session"),
+            ShortcutRow(keys: ["⌘", "\\"], description: "Split pane right"),
+            ShortcutRow(keys: ["⌘", "W"], description: "Close current pane"),
+            ShortcutRow(keys: ["⌘", "1…9"], description: "Jump to session (sidebar order)"),
+            ShortcutRow(keys: ["⌘", "="], description: "Increase font size"),
+            ShortcutRow(keys: ["⌘", "−"], description: "Decrease font size"),
+            ShortcutRow(keys: ["⌘", "0"], description: "Reset font size"),
+            ShortcutRow(keys: ["⌘", ","], description: "Toggle this cheat sheet"),
         ]),
-        ("tmux (after your Prefix)", [
-            ("d", "Detach from session"),
-            ("c", "New window"),
-            ("n / p", "Next / previous window"),
-            ("0–9", "Jump to window"),
-            ("%", "Split pane left/right"),
-            ("\"", "Split pane top/bottom"),
-            ("← ↑ ↓ →", "Move between panes"),
-            ("z", "Zoom / unzoom pane"),
-            ("x", "Kill pane"),
-            ("[", "Scroll & copy mode (q exits)"),
-            (",", "Rename window"),
-            ("$", "Rename session"),
+        ShortcutSection(title: "tmux", subtitle: "After your Prefix", rows: [
+            ShortcutRow(keys: ["d"], description: "Detach from session"),
+            ShortcutRow(keys: ["c"], description: "New window"),
+            ShortcutRow(keys: ["n"], description: "Next window"),
+            ShortcutRow(keys: ["p"], description: "Previous window"),
+            ShortcutRow(keys: ["0…9"], description: "Jump to window"),
+            ShortcutRow(keys: ["%"], description: "Split pane left/right"),
+            ShortcutRow(keys: ["\""], description: "Split pane top/bottom"),
+            ShortcutRow(keys: ["←", "↑", "↓", "→"], description: "Move between panes"),
+            ShortcutRow(keys: ["z"], description: "Zoom / unzoom pane"),
+            ShortcutRow(keys: ["x"], description: "Kill pane"),
+            ShortcutRow(keys: ["["], description: "Scroll & copy mode (q exits)"),
+            ShortcutRow(keys: [","], description: "Rename window"),
+            ShortcutRow(keys: ["$"], description: "Rename session"),
         ]),
     ]
 
+    private let sectionColumns = [GridItem(.adaptive(minimum: 260), spacing: 14, alignment: .top)]
+
     var body: some View {
         ZStack {
-            Color.black.opacity(0.38)
+            Color.black.opacity(0.36)
                 .contentShape(Rectangle())
                 .onTapGesture { dismiss() }
 
@@ -53,23 +69,9 @@ struct CheatSheetView: View {
                     .buttonStyle(.plain)
                 }
 
-                ForEach(sections, id: \.0) { title, rows in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(title)
-                            .font(.caption.smallCaps().weight(.semibold))
-                            .foregroundStyle(.secondary)
-
-                        ForEach(rows, id: \.0) { key, description in
-                            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                Text(key)
-                                    .font(.system(.body, design: .monospaced).weight(.medium))
-                                    .padding(.horizontal, 7)
-                                    .padding(.vertical, 2)
-                                    .frame(width: 110, alignment: .leading)
-                                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 5))
-                                Text(description)
-                            }
-                        }
+                LazyVGrid(columns: sectionColumns, alignment: .leading, spacing: 14) {
+                    ForEach(sections) { section in
+                        sectionCard(section)
                     }
                 }
 
@@ -78,9 +80,13 @@ struct CheatSheetView: View {
                     .foregroundStyle(.tertiary)
             }
             .padding(22)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
-            .shadow(radius: 20)
-            .frame(maxWidth: 560)
+            .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 14))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.20), radius: 20, y: 8)
+            .frame(maxWidth: 680)
             .padding(20)
         }
         // Esc closes; local monitor because terminal NSView usually owns key focus.
@@ -99,5 +105,58 @@ struct CheatSheetView: View {
                 self.escMonitor = nil
             }
         }
+    }
+
+    private func sectionCard(_ section: ShortcutSection) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(section.title)
+                    .font(.headline.weight(.semibold))
+                if let subtitle = section.subtitle {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                ForEach(section.rows) { row in
+                    shortcutRow(row)
+                }
+            }
+        }
+        .padding(12)
+        .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func shortcutRow(_ row: ShortcutRow) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            HStack(spacing: 5) {
+                ForEach(Array(row.keys.enumerated()), id: \.offset) { _, key in
+                    keyCap(key)
+                }
+            }
+            .frame(minWidth: 92, alignment: .leading)
+
+            Text(row.description)
+                .font(.subheadline)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func keyCap(_ key: String) -> some View {
+        Text(key)
+            .font(.system(size: 12, weight: .semibold, design: .rounded))
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.primary.opacity(0.12), lineWidth: 0.7)
+            )
     }
 }
