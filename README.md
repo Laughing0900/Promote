@@ -13,7 +13,7 @@ A macOS agent multiplexer built on tmux. Promote lists your tmux sessions in a s
 ## Install
 
 ```sh
-./make-app.sh
+./install.sh
 ```
 
 Builds the release binary, packages `Promote.app`, and installs it to `/Applications`.

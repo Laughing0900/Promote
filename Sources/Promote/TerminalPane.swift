@@ -13,6 +13,9 @@ struct TerminalPane: NSViewRepresentable {
     func makeNSView(context: Context) -> LocalProcessTerminalView {
         let term = LocalProcessTerminalView(frame: .zero)
         term.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        // debug builds print "Info: Unhandled DECSET ..." for escape codes
+        // SwiftTerm doesn't know (2031 color-scheme, 7727 app-escape); silence
+        term.getTerminal().silentLog = true
 
         var env = Terminal.getEnvironmentVariables(termName: "xterm-256color")
         env.append("LANG=en_US.UTF-8")
