@@ -9,6 +9,11 @@ func run(_ exe: String, _ args: [String], cwd: String? = nil) -> String? {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: exe)
     p.arguments = args
+    // Finder-launched apps have no LANG; in C locale tmux sanitizes the \t
+    // separator in -F output to "_", breaking session parsing
+    var env = ProcessInfo.processInfo.environment
+    env["LANG"] = env["LANG"] ?? "en_US.UTF-8"
+    p.environment = env
     if let cwd { p.currentDirectoryURL = URL(fileURLWithPath: cwd) }
     let pipe = Pipe()
     p.standardOutput = pipe
