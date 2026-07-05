@@ -13,6 +13,8 @@ struct SidebarView: View {
     @State private var hovered: String?
     @State private var cmdHeld = false
     @State private var flagsMonitor: Any?
+    @AppStorage("agentsPanelHeight") private var agentsHeight = 160.0
+    @State private var dragBase: Double?
     @FocusState private var renameFocused: Bool
 
     // cmd+1..9 targets, sidebar visual order
@@ -23,41 +25,10 @@ struct SidebarView: View {
     }
 
     var body: some View {
-        List(selection: $store.selected) {
-            // no Section: native section separators/spacing are unstylable;
-            // headers and dividers are plain rows we fully control
-            ForEach(Array(store.grouped.enumerated()), id: \.element.0) { entry in
-                let group = entry.element.0
-                if entry.offset > 0 {
-                    Divider()
-                        .selectionDisabled()
-                }
-                if group != store.defaultGroup {
-                    Text(group)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .selectionDisabled()
-                }
-                ForEach(entry.element.1) { s in
-                    row(s)
-                        .tag(s.name)
-                        .contextMenu { menu(s) }
-                        .onDrag { NSItemProvider(object: s.name as NSString) }
-                }
-                .onInsert(of: [.utf8PlainText, .plainText]) { index, providers in
-                    providers.first?.loadObject(ofClass: NSString.self) { obj, _ in
-                        guard let name = obj as? String else { return }
-                        DispatchQueue.main.async {
-                            store.handleDrop(name: name,
-                                             group: group == store.defaultGroup ? nil : group,
-                                             at: index)
-                        }
-                    }
-                }
-            }
+        VStack(spacing: 0) {
+            sessionList
+            if !store.agents.isEmpty { agentsPanel }
         }
-        // .padding(.top, 6)
-        .scrollContentBackground(.hidden)
         .background(
             // full-bleed sidebar background, up under toolbar + traffic lights
             Color(nsColor: .underPageBackgroundColor).ignoresSafeArea()
@@ -100,6 +71,107 @@ struct SidebarView: View {
                 pendingDelete = nil
             }
         }
+    }
+
+    private var sessionList: some View {
+        List(selection: $store.selected) {
+            // no Section: native section separators/spacing are unstylable;
+            // headers and dividers are plain rows we fully control
+            ForEach(Array(store.grouped.enumerated()), id: \.element.0) { entry in
+                let group = entry.element.0
+                if entry.offset > 0 {
+                    Divider()
+                        .selectionDisabled()
+                }
+                if group != store.defaultGroup {
+                    Text(group)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .selectionDisabled()
+                }
+                ForEach(entry.element.1) { s in
+                    row(s)
+                        .tag(s.name)
+                        .contextMenu { menu(s) }
+                        .onDrag { NSItemProvider(object: s.name as NSString) }
+                }
+                .onInsert(of: [.utf8PlainText, .plainText]) { index, providers in
+                    providers.first?.loadObject(ofClass: NSString.self) { obj, _ in
+                        guard let name = obj as? String else { return }
+                        DispatchQueue.main.async {
+                            store.handleDrop(name: name,
+                                             group: group == store.defaultGroup ? nil : group,
+                                             at: index)
+                        }
+                    }
+                }
+            }
+        }
+        // .padding(.top, 6)
+        .scrollContentBackground(.hidden)
+    }
+
+    // MARK: - agents panel (pinned under the list, mirrors reference design)
+
+    private var agentsPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // divider doubles as drag handle to resize the panel
+            Divider()
+                .frame(height: 9)
+                .contentShape(Rectangle())
+                .onHover { inside in
+                    if inside { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
+                }
+                .gesture(
+                    DragGesture(coordinateSpace: .global)
+                        .onChanged { v in
+                            if dragBase == nil { dragBase = agentsHeight }
+                            agentsHeight = min(500, max(60, (dragBase ?? 160) - v.translation.height))
+                        }
+                        .onEnded { _ in dragBase = nil }
+                )
+            Text("agents")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 16)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(orderedAgents) { a in
+                        agentRow(a)
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+        }
+        .padding(.bottom, 12)
+        .frame(height: agentsHeight)
+    }
+
+    // agents follow sidebar visual order (groups + manual sort)
+    private var orderedAgents: [AgentInfo] {
+        let rank = Dictionary(uniqueKeysWithValues:
+            store.grouped.flatMap { $0.1 }.enumerated().map { ($0.element.name, $0.offset) })
+        return store.agents.sorted {
+            (rank[$0.session] ?? .max, $0.paneId) < (rank[$1.session] ?? .max, $1.paneId)
+        }
+    }
+
+    // agent pane row: status dot + session name + "status · tool"; tap jumps to session
+    private func agentRow(_ a: AgentInfo) -> some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(a.status.color)
+                .frame(width: 7, height: 7)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(a.session).lineLimit(1)
+                Text("\(a.status.rawValue) · \(a.tool)")
+                    .font(.caption)
+                    .foregroundStyle(a.status.color)
+            }
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { store.selected = a.session }
     }
 
     // MARK: - row
