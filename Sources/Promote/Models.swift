@@ -1,13 +1,18 @@
 import SwiftUI
+import AppKit
 
-struct Session: Identifiable, Equatable {
+struct Session: Identifiable, Equatable, Hashable {
     let name: String
     let path: String
+
     var id: String { name }
 }
 
-enum PRState: String {
+enum PRState: String, CaseIterable {
     case draft, open, merged, closed
+
+    var label: String { rawValue.capitalized }
+
     var color: SwiftUI.Color {
         switch self {
         case .draft: return .gray
@@ -18,19 +23,27 @@ enum PRState: String {
     }
 }
 
-struct PRInfo: Equatable {
+struct PRInfo: Equatable, Hashable {
     let state: PRState
     let number: Int
     let url: String
 }
 
-struct Details: Equatable {
+struct SessionDetails: Equatable {
     var branch: String?
     var pr: PRInfo?
+
+    var isEmpty: Bool { branch == nil && pr == nil }
 }
 
-enum AgentStatus: String {
+// Backward compatibility for existing UI files while we refactor.
+typealias Details = SessionDetails
+
+enum AgentStatus: String, CaseIterable {
     case working, idle, blocked, done
+
+    var title: String { rawValue.capitalized }
+
     var color: SwiftUI.Color {
         switch self {
         case .working: return .yellow
@@ -39,35 +52,31 @@ enum AgentStatus: String {
         case .done: return .blue
         }
     }
+
+    var symbol: String {
+        switch self {
+        case .working: return "clock.arrow.circlepath"
+        case .idle: return "pause.circle"
+        case .blocked: return "hand.raised.circle"
+        case .done: return "checkmark.circle"
+        }
+    }
 }
 
-// a tmux pane running an agent CLI (claude/pi/opencode/codex)
-struct AgentInfo: Identifiable, Equatable {
+// A tmux pane that appears to be running an agent CLI.
+struct AgentInfo: Identifiable, Equatable, Hashable {
     let paneId: String
     let session: String
     let tool: String
     let status: AgentStatus
+
     var id: String { paneId }
-}
-
-func colorFromHex(_ s: String) -> SwiftUI.Color? {
-    guard s.hasPrefix("#"), let v = UInt32(s.dropFirst(), radix: 16) else { return nil }
-    return SwiftUI.Color(red: Double((v >> 16) & 0xFF) / 255,
-                         green: Double((v >> 8) & 0xFF) / 255,
-                         blue: Double(v & 0xFF) / 255)
-}
-
-func hexString(_ c: NSColor) -> String {
-    let c = c.usingColorSpace(.sRGB) ?? c
-    return String(format: "#%02X%02X%02X",
-                  Int(round(c.redComponent * 255)),
-                  Int(round(c.greenComponent * 255)),
-                  Int(round(c.blueComponent * 255)))
 }
 
 struct PaletteColor: Identifiable {
     let id: String
     let hex: String
+
     var color: SwiftUI.Color { colorFromHex(hex) ?? .gray }
 }
 
@@ -81,3 +90,34 @@ let palette: [PaletteColor] = [
     .init(id: "Magenta", hex: "#D6336C"), .init(id: "Rose", hex: "#C2185B"),
     .init(id: "Brown", hex: "#A0632A"), .init(id: "Charcoal", hex: "#7F8C9B"),
 ]
+
+func colorFromHex(_ value: String) -> SwiftUI.Color? {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.hasPrefix("#") else { return nil }
+
+    let hex = String(trimmed.dropFirst())
+    if hex.count == 3,
+       let v = UInt16(hex, radix: 16) {
+        let r = Double((v >> 8) & 0xF) / 15
+        let g = Double((v >> 4) & 0xF) / 15
+        let b = Double(v & 0xF) / 15
+        return SwiftUI.Color(red: r, green: g, blue: b)
+    }
+
+    guard hex.count == 6, let v = UInt32(hex, radix: 16) else { return nil }
+    return SwiftUI.Color(
+        red: Double((v >> 16) & 0xFF) / 255,
+        green: Double((v >> 8) & 0xFF) / 255,
+        blue: Double(v & 0xFF) / 255
+    )
+}
+
+func hexString(_ color: NSColor) -> String {
+    let c = color.usingColorSpace(.sRGB) ?? color
+    return String(
+        format: "#%02X%02X%02X",
+        Int(round(c.redComponent * 255)),
+        Int(round(c.greenComponent * 255)),
+        Int(round(c.blueComponent * 255))
+    )
+}

@@ -1,68 +1,114 @@
 import SwiftUI
 import AppKit
 
-// app shell: split view layout, refresh timer
-struct ContentView: View {
+// app shell: split layout + refresh loop + keyboard commands
+struct RootView: View {
     @ObservedObject var store: SessionStore
     @State private var sidebarVisibility: NavigationSplitViewVisibility = .all
-    // ponytail: 2s poll, switch to tmux hooks/control-mode if it ever matters
-    let timer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
+
+    // ponytail: poll tmux every 2s; move to hooks/control-mode only if needed
+    private let timer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
     var body: some View {
         NavigationSplitView(columnVisibility: $sidebarVisibility) {
-            SidebarView(store: store, sidebarVisibility: $sidebarVisibility)
-                .navigationSplitViewColumnWidth(min: 200, ideal: 260)
+            SidebarView(store: store)
+                .navigationSplitViewColumnWidth(min: 220, ideal: 280, max: 420)
         } detail: {
-            Group {
-                if let name = store.selected {
-                    TerminalPane(session: name)
-                        .id(name) // new terminal per session
-                } else {
-                    Text("Select a tmux session")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .ignoresSafeArea(edges: .bottom)
-            .navigationTitle(store.selected ?? "Tmux") // session name in title bar
+            DetailPane(store: store)
+                .navigationTitle(store.selected ?? "Promote")
         }
-        .ignoresSafeArea(edges: .bottom) // no bottom margin under panes
-        .toolbarBackground(.hidden, for: .windowToolbar) // blend title bar into content
+        .ignoresSafeArea(edges: .bottom)
+        .toolbarBackground(.hidden, for: .windowToolbar)
         .overlay {
             if store.showCheatSheet {
                 CheatSheetView { store.showCheatSheet = false }
+                    .transition(.opacity)
             }
         }
         .onAppear {
             store.refresh()
-            DispatchQueue.main.async { installTitlebarButtons(store: store) }
+            DispatchQueue.main.async {
+                installTitlebarButtons(store: store)
+            }
         }
-        .onReceive(timer) { _ in store.refresh() }
+        .onReceive(timer) { _ in
+            store.refresh()
+        }
     }
 }
 
-struct TmuxApp: App {
+private struct DetailPane: View {
+    @ObservedObject var store: SessionStore
+
+    private var selectedSession: Session? {
+        guard let name = store.selected else { return nil }
+        return store.sessions.first { $0.name == name }
+    }
+
+    var body: some View {
+        Group {
+            if let session = selectedSession {
+                activeSessionView(session)
+            } else {
+                EmptyDetailState(newSession: store.newSession)
+            }
+        }
+        .ignoresSafeArea(edges: .bottom)
+    }
+
+    @ViewBuilder
+    private func activeSessionView(_ session: Session) -> some View {
+        TerminalPane(session: session.name)
+            .id(session.name)
+    }
+}
+
+private struct EmptyDetailState: View {
+    let newSession: () -> Void
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("No session selected")
+                .font(.title3.bold())
+            Text("Create a tmux session or pick one from the sidebar.")
+                .foregroundStyle(.secondary)
+            Button("New Session", action: newSession)
+                .buttonStyle(.borderedProminent)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+    }
+}
+
+struct PromoteApp: App {
     @StateObject private var store = SessionStore()
     @AppStorage(Settings.fontSizeKey) private var fontSize = 13.0
 
     var body: some Scene {
         WindowGroup {
-            ContentView(store: store)
-                .frame(minWidth: 900, minHeight: 560)
+            RootView(store: store)
+                .frame(minWidth: 980, minHeight: 620)
         }
-        // .windowStyle(.hiddenTitleBar) // no title bar header
-        .windowToolbarStyle(.unifiedCompact) // thin title bar, shows session name
+        .windowToolbarStyle(.unifiedCompact)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Session") { store.newSession() }
                     .keyboardShortcut("n", modifiers: .command)
             }
-            // ⌘, — no Settings scene, so reuse the slot for the cheat sheet
+
             CommandGroup(replacing: .appSettings) {
-                Button("Keyboard Shortcuts") { store.showCheatSheet.toggle() }
-                    .keyboardShortcut(",", modifiers: .command)
+                Button("Keyboard Shortcuts") {
+                    store.showCheatSheet.toggle()
+                }
+                .keyboardShortcut(",", modifiers: .command)
             }
+
             CommandMenu("View") {
+                Button("Refresh Sessions") { store.refresh() }
+                    .keyboardShortcut("r", modifiers: .command)
+
+                Divider()
+
                 Button("Increase Font Size") { fontSize += 1 }
                     .keyboardShortcut("=", modifiers: .command)
                 Button("Decrease Font Size") { fontSize = max(8, fontSize - 1) }
@@ -70,21 +116,23 @@ struct TmuxApp: App {
                 Button("Reset Font Size") { fontSize = 13 }
                     .keyboardShortcut("0", modifiers: .command)
             }
+
             CommandMenu("Session") {
-                // cmd+1..9 jump by sidebar order (groups flattened top to bottom)
-                ForEach(1..<10, id: \.self) { i in
-                    Button("Session \(i)") {
-                        let flat = store.grouped.flatMap { $0.1 }
-                        if i <= flat.count { store.selected = flat[i - 1].name }
+                ForEach(1..<10, id: \.self) { index in
+                    Button("Jump to Session \(index)") {
+                        store.jumpToHotkeyIndex(index)
                     }
-                    .keyboardShortcut(KeyEquivalent(Character("\(i)")), modifiers: .command)
+                    .keyboardShortcut(
+                        KeyEquivalent(Character("\(index)")),
+                        modifiers: .command
+                    )
                 }
             }
         }
     }
 }
 
-// SPM executable: make it a real foreground app
+// SPM executable: promote to foreground GUI app
 NSApplication.shared.setActivationPolicy(.regular)
 NSApplication.shared.activate(ignoringOtherApps: true)
-TmuxApp.main()
+PromoteApp.main()

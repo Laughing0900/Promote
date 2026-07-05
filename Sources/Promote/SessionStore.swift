@@ -1,230 +1,492 @@
 import SwiftUI
+import Foundation
 
-// owns session list, selection, per-session metadata, and all tmux/git/gh calls
+// owns app state and runs all tmux/git/gh shell work off the main thread
 final class SessionStore: ObservableObject {
-    @Published var sessions: [Session] = []
+    @Published private(set) var sessions: [Session] = []
     @Published var selected: String?
-    @Published var details: [String: Details] = [:]
+    @Published private(set) var details: [String: SessionDetails] = [:]
     @Published var colors: [String: String] = Settings.colors
     @Published var groups: [String: String] = Settings.groups
     @Published var showCheatSheet = false
-    @Published var agents: [AgentInfo] = []
+    @Published private(set) var agents: [AgentInfo] = []
+    @Published var searchText = ""
+    @Published private(set) var isRefreshing = false
+    @Published private(set) var lastRefresh: Date?
 
-    let defaultGroup = "Sessions"
+    let defaultGroup = ""
 
-    // ponytail: serial queue serializes access to prCache, no lock needed
-    private let detailsQueue = DispatchQueue(label: "details")
-    private var prCache: [String: (Date, PRInfo?)] = [:] // touch only on detailsQueue
-    private var agentWorked: Set<String> = [] // pane ids seen working; touch only on detailsQueue
+    // ponytail: one serial queue keeps shell work + caches simple and deterministic
+    private let workerQueue = DispatchQueue(label: "session.store.worker", qos: .userInitiated)
+    private var refreshInFlight = false
+    private var refreshPending = false
+
+    // workerQueue-only caches
+    private var prCache: [String: (Date, PRInfo?)] = [:]
+    private var agentWorked: Set<String> = []
+
     private let agentTools: Set<String> = ["claude", "pi", "opencode", "codex"]
+    private let wrapperCommands: Set<String> = ["node", "bun", "sh"]
+    private let blockedPrompts: [String] = ["Do you want", "Allow command", "(y/n)", "y/N"]
+    private let workingPrompts: [String] = ["esc to interrupt", "thinking", "running", "processing"]
 
-    var groupNames: [String] { Set(groups.values).sorted() }
+    // MARK: - Derived state
 
-    // grouped sections first (alphabetical); ungrouped section always present so drops land there
     var grouped: [(String, [Session])] {
-        var out: [(String, [Session])] = []
-        for g in groupNames {
-            let items = sessions.filter { groups[$0.name] == g }
-            if !items.isEmpty { out.append((g, items)) }
+        sections(from: filteredSessions())
+    }
+
+    var hotkeyOrderedSessions: [Session] {
+        sections(from: sessions).flatMap(\.1)
+    }
+
+    var groupNames: [String] {
+        let activeNames = Set(sessions.map(\.name))
+        let names = groups.compactMap { key, value -> String? in
+            guard activeNames.contains(key) else { return nil }
+            return normalizedGroupName(value)
         }
-        out.append((defaultGroup, sessions.filter { groups[$0.name] == nil }))
-        return out
+        return Array(Set(names)).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
-    func color(of name: String) -> SwiftUI.Color? {
-        guard let v = colors[name] else { return nil }
-        // hex value, or legacy palette id like "red"
-        return colorFromHex(v) ?? palette.first { $0.id.lowercased() == v }?.color
+    var hasSearch: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    // MARK: - tmux actions
+    func details(for sessionName: String) -> SessionDetails {
+        details[sessionName] ?? SessionDetails()
+    }
+
+    func color(of sessionName: String) -> SwiftUI.Color? {
+        guard let value = colors[sessionName] else { return nil }
+        if let hex = colorFromHex(value) { return hex }
+        return palette.first { $0.id.lowercased() == value.lowercased() }?.color
+    }
+
+    func agents(for sessionName: String) -> [AgentInfo] {
+        agents.filter { $0.session == sessionName }
+    }
+
+    // MARK: - Refresh pipeline
 
     func refresh() {
-        // session_path is the start dir and can be stale; active pane path tracks reality
-        let out = tmux("list-sessions", "-F", "#S\t#{pane_current_path}") ?? ""
-        var list = out.split(separator: "\n").map { line -> Session in
-            let parts = line.split(separator: "\t", maxSplits: 1).map(String.init)
-            return Session(name: parts[0], path: parts.count > 1 ? parts[1] : "")
-        }
-        let order = Settings.order
-        let rank = { (s: Session) in order.firstIndex(of: s.name) ?? Int.max }
-        list = list.enumerated()
-            .sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }
-            .map(\.element)
-        if list != sessions { sessions = list }
-        if let sel = selected, !list.contains(where: { $0.name == sel }) { selected = nil }
-        for s in list { fetchDetails(s) }
-        fetchAgents()
-    }
-
-    func newSession() {
-        if let name = tmux("new-session", "-d", "-P", "-F", "#S") {
-            refresh()
-            selected = name
-        }
-    }
-
-    func rename(_ old: String, to new: String) {
-        guard !new.isEmpty, new != old else { return }
-        tmux("rename-session", "-t", "=" + old, new)
-        if let c = colors.removeValue(forKey: old) {
-            colors[new] = c
-            saveColors()
-        }
-        if let g = groups.removeValue(forKey: old) {
-            groups[new] = g
-            saveGroups()
-        }
-        var order = Settings.order
-        if let i = order.firstIndex(of: old) {
-            order[i] = new
-            Settings.order = order
-        }
-        if selected == old { selected = new }
-        refresh()
-    }
-
-    func kill(_ name: String) {
-        tmux("kill-session", "-t", "=" + name)
-        refresh()
-    }
-
-    // MARK: - metadata
-
-    func setColor(_ name: String, hex: String?) {
-        if let hex { colors[name] = hex } else { colors.removeValue(forKey: name) }
-        saveColors()
-    }
-
-    func setGroup(_ name: String, to group: String?) {
-        if let group { groups[name] = group } else { groups.removeValue(forKey: name) }
-        saveGroups()
-    }
-
-    // drop `name` into `group` (nil = ungrouped) at row `index` of that section
-    func handleDrop(name: String, group: String?, at index: Int) {
-        guard let cur = sessions.firstIndex(where: { $0.name == name }) else { return }
-        let items = sessions.filter { groups[$0.name] == group }
-        var insertAt: Int
-        if index < items.count {
-            insertAt = sessions.firstIndex(of: items[index]) ?? sessions.count
-        } else if let last = items.last {
-            insertAt = (sessions.firstIndex(of: last) ?? sessions.count - 1) + 1
-        } else {
-            insertAt = sessions.count
-        }
-        let s = sessions.remove(at: cur)
-        if cur < insertAt { insertAt -= 1 }
-        setGroup(name, to: group)
-        sessions.insert(s, at: insertAt)
-        saveOrder()
-    }
-
-    private func saveOrder() { Settings.order = sessions.map(\.name) }
-
-    private func saveColors() { Settings.colors = colors }
-
-    private func saveGroups() { Settings.groups = groups }
-
-    // MARK: - agents (panes running an agent CLI)
-
-    private func fetchAgents() {
-        detailsQueue.async { [self] in
-            let now = Date().timeIntervalSince1970
-            let out = tmux("list-panes", "-a", "-F",
-                           "#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{window_activity}\t#{pane_pid}") ?? ""
-            let rows = out.split(separator: "\n").map { $0.split(separator: "\t").map(String.init) }
-            let ps = rows.contains(where: { $0.count >= 5 && wrapperCmds.contains($0[2]) }) ? psSnapshot() : []
-            let found = rows.compactMap { p -> AgentInfo? in
-                guard p.count >= 5, let tool = agentTool(p[2], panePid: p[4], ps: ps) else { return nil }
-                return AgentInfo(paneId: p[1], session: p[0], tool: tool,
-                                 status: agentStatus(pane: p[1], activity: Double(p[3]) ?? 0, now: now))
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            if self.refreshInFlight {
+                self.refreshPending = true
+                return
             }
-            agentWorked.formIntersection(Set(found.map(\.paneId)))
+            self.refreshInFlight = true
+            DispatchQueue.main.async { self.isRefreshing = true }
+            self.performRefreshPass()
+        }
+    }
+
+    private func performRefreshPass() {
+        let snapshotSessions = querySessions()
+        var snapshotDetails: [String: SessionDetails] = [:]
+
+        for session in snapshotSessions {
+            snapshotDetails[session.name] = queryDetails(for: session)
+        }
+
+        let snapshotAgents = queryAgents()
+
+        DispatchQueue.main.async { [weak self] in
+            self?.applySnapshot(sessions: snapshotSessions, details: snapshotDetails, agents: snapshotAgents)
+        }
+
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            if self.refreshPending {
+                self.refreshPending = false
+                self.performRefreshPass()
+                return
+            }
+            self.refreshInFlight = false
             DispatchQueue.main.async {
-                if self.agents != found { self.agents = found }
+                self.isRefreshing = false
+                self.lastRefresh = Date()
             }
         }
     }
 
-    // pane_current_command shows the executable name, so node-based CLIs
-    // (pi) report "node" — for those, walk pane descendants in one ps
-    // snapshot and match argv0 against agentTools
-    private let wrapperCmds: Set<String> = ["node", "bun", "sh"]
+    private func applySnapshot(sessions nextSessions: [Session],
+                               details nextDetails: [String: SessionDetails],
+                               agents nextAgents: [AgentInfo]) {
+        if sessions != nextSessions {
+            sessions = nextSessions
+        }
 
-    private func agentTool(_ cmd: String, panePid: String, ps: [(pid: String, ppid: String, name: String)]) -> String? {
-        if agentTools.contains(cmd) { return cmd }
-        // claude code's process name is its version number, e.g. "2.1.201"
-        if cmd.range(of: #"^\d+\.\d+\.\d+$"#, options: .regularExpression) != nil { return "claude" }
-        guard wrapperCmds.contains(cmd) else { return nil }
-        var frontier = [panePid]
-        while let pid = frontier.popLast() {
-            for p in ps where p.ppid == pid {
-                if agentTools.contains(p.name) { return p.name }
-                frontier.append(p.pid)
+        let sessionNames = Set(nextSessions.map(\.name))
+        if let selected, !sessionNames.contains(selected) {
+            self.selected = nextSessions.first?.name
+        } else if selected == nil {
+            self.selected = nextSessions.first?.name
+        }
+
+        if details != nextDetails {
+            details = nextDetails
+        }
+
+        if agents != nextAgents {
+            agents = nextAgents
+        }
+    }
+
+    private func querySessions() -> [Session] {
+        let out = Shell.tmux("list-sessions", "-F", "#S\t#{pane_current_path}") ?? ""
+
+        var parsed: [Session] = out
+            .split(whereSeparator: \.isNewline)
+            .compactMap { line in
+                let parts = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+                guard let first = parts.first, !first.isEmpty else { return nil }
+                let name = String(first)
+                let path = parts.count > 1 ? String(parts[1]) : ""
+                return Session(name: name, path: path)
+            }
+
+        let manualOrder = Settings.order
+        let rank: (Session) -> Int = { session in
+            manualOrder.firstIndex(of: session.name) ?? Int.max
+        }
+
+        parsed = parsed.enumerated().sorted {
+            (rank($0.element), $0.offset) < (rank($1.element), $1.offset)
+        }
+        .map(\.element)
+
+        return parsed
+    }
+
+    private func queryDetails(for session: Session) -> SessionDetails {
+        guard !session.path.isEmpty else { return SessionDetails() }
+
+        var next = SessionDetails()
+        next.branch = Shell.run(GIT, ["-C", session.path, "branch", "--show-current"])
+        if next.branch?.isEmpty == true { next.branch = nil }
+        next.pr = queryPRInfo(for: session.path)
+        return next
+    }
+
+    private func queryPRInfo(for path: String) -> PRInfo? {
+        if let (cachedAt, cachedValue) = prCache[path], Date().timeIntervalSince(cachedAt) < 60 {
+            return cachedValue
+        }
+
+        var resolved: PRInfo?
+
+        if FileManager.default.isExecutableFile(atPath: GH),
+           let out = Shell.run(GH, ["pr", "view", "--json", "state,isDraft,number,url"], cwd: path),
+           let data = out.data(using: .utf8),
+           let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           let stateRaw = object["state"] as? String,
+           let number = object["number"] as? Int,
+           let url = object["url"] as? String {
+            let mappedState = (object["isDraft"] as? Bool == true && stateRaw == "OPEN")
+                ? PRState.draft
+                : PRState(rawValue: stateRaw.lowercased())
+
+            if let mappedState {
+                resolved = PRInfo(state: mappedState, number: number, url: url)
             }
         }
+
+        prCache[path] = (Date(), resolved)
+        return resolved
+    }
+
+    // MARK: - Agent scan
+
+    private func queryAgents() -> [AgentInfo] {
+        let format = "#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{window_activity}\t#{pane_pid}"
+        let out = Shell.tmux("list-panes", "-a", "-F", format) ?? ""
+
+        let rows: [(session: String, pane: String, command: String, activity: Double, pid: String)] =
+            out.split(whereSeparator: \.isNewline).compactMap { line in
+                let parts = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+                guard parts.count >= 5 else { return nil }
+                return (parts[0], parts[1], parts[2].lowercased(), Double(parts[3]) ?? 0, parts[4])
+            }
+
+        if rows.isEmpty {
+            agentWorked.removeAll()
+            return []
+        }
+
+        let needsProcessSnapshot = rows.contains { wrapperCommands.contains($0.command) }
+        let processes = needsProcessSnapshot ? processSnapshot() : []
+        let now = Date().timeIntervalSince1970
+
+        var found: [AgentInfo] = []
+        found.reserveCapacity(rows.count)
+
+        for row in rows {
+            guard let tool = resolveAgentTool(command: row.command, panePid: row.pid, ps: processes) else {
+                continue
+            }
+
+            let status = classifyAgentStatus(pane: row.pane, activity: row.activity, now: now)
+            found.append(AgentInfo(paneId: row.pane, session: row.session, tool: tool, status: status))
+        }
+
+        agentWorked.formIntersection(Set(found.map(\.paneId)))
+
+        let sidebarRank = Dictionary(uniqueKeysWithValues: sessions.enumerated().map { ($0.element.name, $0.offset) })
+        return found.sorted {
+            (sidebarRank[$0.session] ?? .max, $0.paneId) < (sidebarRank[$1.session] ?? .max, $1.paneId)
+        }
+    }
+
+    private func resolveAgentTool(command: String,
+                                  panePid: String,
+                                  ps: [(pid: String, ppid: String, name: String, args: String)]) -> String? {
+        if let direct = canonicalTool(from: command) {
+            return direct
+        }
+
+        guard wrapperCommands.contains(command) else { return nil }
+
+        var queue = [panePid]
+        var visited = Set<String>()
+
+        while let pid = queue.popLast() {
+            guard visited.insert(pid).inserted else { continue }
+
+            for child in ps where child.ppid == pid {
+                if let resolved = canonicalTool(from: child.name) {
+                    return resolved
+                }
+                // cursor CLI's argv0 is the generic "agent"; its script path
+                // (~/.local/share/cursor-agent/...) is the reliable marker
+                if child.args.contains("cursor-agent") { return "cursor" }
+                queue.append(child.pid)
+            }
+        }
+
         return nil
     }
 
-    // (pid, ppid, argv0 basename) for every process
-    private func psSnapshot() -> [(pid: String, ppid: String, name: String)] {
-        (run("/bin/ps", ["-axo", "pid=,ppid=,args="]) ?? "").split(separator: "\n").compactMap { line in
-            let f = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
-            guard f.count >= 3 else { return nil }
-            let argv0 = f[2].split(separator: " ")[0].split(separator: "/").last.map(String.init) ?? ""
-            return (String(f[0]), String(f[1]), argv0)
+    private func canonicalTool(from raw: String) -> String? {
+        let command = raw.lowercased()
+        if agentTools.contains(command) { return command }
+        if command.range(of: #"^\d+\.\d+\.\d+$"#, options: .regularExpression) != nil { return "claude" }
+        if command == "open-code" { return "opencode" }
+        if command == "cursor-agent" { return "cursor" }
+        return nil
+    }
+
+    private func processSnapshot() -> [(pid: String, ppid: String, name: String, args: String)] {
+        let out = Shell.run("/bin/ps", ["-axo", "pid=,ppid=,args="]) ?? ""
+
+        return out.split(whereSeparator: \.isNewline).compactMap { line in
+            let fields = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+            guard fields.count >= 3 else { return nil }
+            let args = String(fields[2]).lowercased()
+            let argv0 = fields[2]
+                .split(separator: " ")[0]
+                .split(separator: "/")
+                .last
+                .map(String.init) ?? ""
+            return (String(fields[0]), String(fields[1]), argv0.lowercased(), args)
         }
     }
 
-    // call only on detailsQueue (touches agentWorked)
-    // ponytail: status = sniffing pane tail text + activity age; real fix is
-    // agent-side hooks setting a tmux @status option this just reads
-    private func agentStatus(pane: String, activity: Double, now: Double) -> AgentStatus {
-        let tail = tmux("capture-pane", "-p", "-t", pane, "-S", "-20") ?? ""
-        if tail.contains("Do you want") || tail.contains("Allow command")
-            || tail.contains("(y/n)") || tail.contains("y/N") {
+    private func classifyAgentStatus(pane: String, activity: Double, now: Double) -> AgentStatus {
+        let tail = Shell.tmux("capture-pane", "-p", "-t", pane, "-S", "-30") ?? ""
+
+        if blockedPrompts.contains(where: { tail.contains($0) }) {
             return .blocked
         }
-        if tail.localizedCaseInsensitiveContains("esc to interrupt") || now - activity < 3 {
+
+        let isRecent = (now - activity) < 2.5
+        let hasWorkingPrompt = workingPrompts.contains { token in
+            tail.localizedCaseInsensitiveContains(token)
+        }
+
+        if isRecent || hasWorkingPrompt {
             agentWorked.insert(pane)
             return .working
         }
+
         return agentWorked.contains(pane) ? .done : .idle
     }
 
-    // MARK: - details (git branch + PR status)
+    // MARK: - User actions
 
-    private func fetchDetails(_ s: Session) {
-        detailsQueue.async { [self] in
-            var d = Details()
-            if !s.path.isEmpty {
-                d.branch = run(GIT, ["-C", s.path, "branch", "--show-current"])
-                if d.branch?.isEmpty == true { d.branch = nil }
-                d.pr = prInfo(for: s.path)
+    func newSession() {
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            let created = Shell.tmux("new-session", "-d", "-P", "-F", "#S")
+            if let created {
+                DispatchQueue.main.async { self.selected = created }
             }
-            DispatchQueue.main.async {
-                if self.details[s.name] != d { self.details[s.name] = d }
-            }
+            self.refresh()
         }
     }
 
-    // call only on detailsQueue; 60s cache per repo
-    private func prInfo(for path: String) -> PRInfo? {
-        if let (t, v) = prCache[path], Date().timeIntervalSince(t) < 60 { return v }
-        var result: PRInfo?
-        if FileManager.default.isExecutableFile(atPath: GH),
-           let out = run(GH, ["pr", "view", "--json", "state,isDraft,number,url"], cwd: path),
-           let data = out.data(using: .utf8),
-           let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-           let stateRaw = obj["state"] as? String,
-           let number = obj["number"] as? Int,
-           let url = obj["url"] as? String {
-            let state = (obj["isDraft"] as? Bool == true && stateRaw == "OPEN")
-                ? PRState.draft : PRState(rawValue: stateRaw.lowercased())
-            if let state { result = PRInfo(state: state, number: number, url: url) }
+    func rename(_ old: String, to proposed: String) {
+        let next = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !next.isEmpty, next != old else { return }
+
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            guard Shell.tmux("rename-session", "-t", "=" + old, next) != nil else {
+                self.refresh()
+                return
+            }
+
+            DispatchQueue.main.async {
+                if let color = self.colors.removeValue(forKey: old) {
+                    self.colors[next] = color
+                    self.saveColors()
+                }
+                if let group = self.groups.removeValue(forKey: old) {
+                    self.groups[next] = group
+                    self.saveGroups()
+                }
+
+                var order = Settings.order
+                if let idx = order.firstIndex(of: old) {
+                    order[idx] = next
+                    Settings.order = order
+                }
+
+                if self.selected == old {
+                    self.selected = next
+                }
+            }
+
+            self.refresh()
         }
-        prCache[path] = (Date(), result)
-        return result
+    }
+
+    func kill(_ sessionName: String) {
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            _ = Shell.tmux("kill-session", "-t", "=" + sessionName)
+            self.refresh()
+        }
+    }
+
+    func setColor(_ sessionName: String, hex: String?) {
+        if let hex {
+            colors[sessionName] = hex
+        } else {
+            colors.removeValue(forKey: sessionName)
+        }
+        saveColors()
+    }
+
+    func setGroup(_ sessionName: String, to group: String?) {
+        if let normalized = normalizedGroupName(group) {
+            groups[sessionName] = normalized
+        } else {
+            groups.removeValue(forKey: sessionName)
+        }
+        saveGroups()
+    }
+
+    func removeGroup(named groupName: String) {
+        let normalized = normalizedGroupName(groupName)
+        guard let normalized else { return }
+
+        let keys = groups.keys.filter { groups[$0] == normalized }
+        for key in keys {
+            groups.removeValue(forKey: key)
+        }
+        saveGroups()
+    }
+
+    // Drag-drop reorder. Index is within the destination group's visible rows.
+    func handleDrop(name: String, group: String?, at index: Int) {
+        guard !hasSearch else { return } // avoid ambiguous reorder while filtering
+        guard let moving = sessions.first(where: { $0.name == name }) else { return }
+
+        let normalizedGroup = normalizedGroupName(group)
+        var ordered = sessions.filter { $0.name != name }
+
+        if let normalizedGroup {
+            groups[name] = normalizedGroup
+        } else {
+            groups.removeValue(forKey: name)
+        }
+        saveGroups()
+
+        let destinationRows = ordered.filter { normalizedGroupName(groups[$0.name]) == normalizedGroup }
+
+        var insertAt = ordered.count
+        if index < destinationRows.count {
+            let anchor = destinationRows[index]
+            insertAt = ordered.firstIndex(of: anchor) ?? ordered.count
+        } else if let last = destinationRows.last {
+            insertAt = (ordered.firstIndex(of: last) ?? (ordered.count - 1)) + 1
+        }
+
+        insertAt = min(max(0, insertAt), ordered.count)
+        ordered.insert(moving, at: insertAt)
+
+        sessions = ordered
+        saveOrder()
+    }
+
+    func jumpToHotkeyIndex(_ index: Int) {
+        let ordered = hotkeyOrderedSessions
+        guard index > 0, index <= ordered.count else { return }
+        selected = ordered[index - 1].name
+    }
+
+    // MARK: - Private helpers
+
+    private func filteredSessions() -> [Session] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return sessions }
+
+        return sessions.filter { session in
+            if session.name.lowercased().contains(query) { return true }
+            if session.path.lowercased().contains(query) { return true }
+            if let branch = details[session.name]?.branch?.lowercased(), branch.contains(query) { return true }
+            if let pr = details[session.name]?.pr, "#\(pr.number)".contains(query) { return true }
+            return false
+        }
+    }
+
+    private func sections(from source: [Session]) -> [(String, [Session])] {
+        guard !source.isEmpty else { return [(defaultGroup, [])] }
+
+        var output: [(String, [Session])] = []
+
+        let sortedGroups = Array(Set(source.compactMap { normalizedGroupName(groups[$0.name]) }))
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+
+        for group in sortedGroups {
+            let rows = source.filter { normalizedGroupName(groups[$0.name]) == group }
+            if !rows.isEmpty {
+                output.append((group, rows))
+            }
+        }
+
+        let ungrouped = source.filter { normalizedGroupName(groups[$0.name]) == nil }
+        output.append((defaultGroup, ungrouped))
+        return output.filter { !$0.1.isEmpty || $0.0 == defaultGroup }
+    }
+
+    private func normalizedGroupName(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? nil : cleaned
+    }
+
+    private func saveOrder() {
+        Settings.order = sessions.map(\.name)
+    }
+
+    private func saveColors() {
+        Settings.colors = colors
+    }
+
+    private func saveGroups() {
+        Settings.groups = groups
     }
 }

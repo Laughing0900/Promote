@@ -1,20 +1,24 @@
 import AppKit
 
-// bridges NSColorPanel (default macOS color picker) to a callback
-class ColorPanelBridge: NSObject {
+// Thin bridge from NSColorPanel callbacks to Swift closures.
+final class ColorPanelBridge: NSObject {
     static let shared = ColorPanelBridge()
-    var onPick: ((NSColor) -> Void)?
 
-    func open(_ handler: @escaping (NSColor) -> Void) {
-        onPick = handler
+    private var onPick: ((NSColor) -> Void)?
+
+    func open(_ onPick: @escaping (NSColor) -> Void) {
+        self.onPick = onPick
+
         let panel = NSColorPanel.shared
         panel.setTarget(self)
-        panel.setAction(#selector(changed(_:)))
+        panel.setAction(#selector(colorChanged(_:)))
         panel.isContinuous = true
-        panel.makeKeyAndOrderFront(nil)
+        panel.orderFrontRegardless()
+        panel.makeKey()
     }
 
-    @objc func changed(_ sender: NSColorPanel) {
+    @objc
+    private func colorChanged(_ sender: NSColorPanel) {
         onPick?(sender.color)
     }
 }
