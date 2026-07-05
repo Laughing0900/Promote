@@ -326,6 +326,27 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    // split the selected session's active window horizontally (new pane on the right)
+    func splitPaneRight() {
+        guard let selected else { return }
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            // split-window wants a pane target; "=name:" = exact session, active window
+            _ = Shell.tmux("split-window", "-h", "-t", "=" + selected + ":")
+            self.refresh()
+        }
+    }
+
+    // kill the selected session's active pane; tmux kills the session when the last pane dies
+    func closeActivePane() {
+        guard let selected else { return }
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            _ = Shell.tmux("kill-pane", "-t", "=" + selected + ":")
+            self.refresh()
+        }
+    }
+
     func rename(_ old: String, to proposed: String) {
         let next = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !next.isEmpty, next != old else { return }
