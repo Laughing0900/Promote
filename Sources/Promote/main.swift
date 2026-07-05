@@ -104,11 +104,6 @@ struct PromoteApp: App {
             }
 
             CommandMenu("View") {
-                Button("Refresh Sessions") { store.refresh() }
-                    .keyboardShortcut("r", modifiers: .command)
-
-                Divider()
-
                 Button("Increase Font Size") { fontSize += 1 }
                     .keyboardShortcut("=", modifiers: .command)
                 Button("Decrease Font Size") { fontSize = max(8, fontSize - 1) }
@@ -117,7 +112,18 @@ struct PromoteApp: App {
                     .keyboardShortcut("0", modifiers: .command)
             }
 
+            // replace the default Close (⌘W closes the window otherwise)
+            CommandGroup(replacing: .saveItem) {
+                Button("Close Pane") { store.closeActivePane() }
+                    .keyboardShortcut("w", modifiers: .command)
+            }
+
             CommandMenu("Session") {
+                Button("Split Pane Right") { store.splitPaneRight() }
+                    .keyboardShortcut("\\", modifiers: .command)
+
+                Divider()
+
                 ForEach(1..<10, id: \.self) { index in
                     Button("Jump to Session \(index)") {
                         store.jumpToHotkeyIndex(index)

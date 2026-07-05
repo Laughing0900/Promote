@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build Promote.app from the release binary. Usage: ./make-app.sh [--install]
+# Build Promote.app from the release binary and install to /Applications. Usage: ./make-app.sh
 set -e
 cd "$(dirname "$0")"
 
@@ -42,10 +42,6 @@ fi
 cp .build/release/Promote "$APP/Contents/MacOS/Promote"
 codesign --force --sign - "$APP"
 
-if [ "$1" = "--install" ]; then
-    rm -rf /Applications/Promote.app
-    cp -R "$APP" /Applications/
-    echo "Installed to /Applications/Promote.app"
-else
-    echo "Built $APP — run ./make-app.sh --install to copy to /Applications"
-fi
+rm -rf /Applications/Promote.app
+cp -R "$APP" /Applications/
+echo "Installed to /Applications/Promote.app"

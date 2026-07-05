@@ -10,7 +10,8 @@ struct CheatSheetView: View {
     private let sections: [(String, [(String, String)])] = [
         ("App", [
             ("⌘N", "New tmux session"),
-            ("⌘R", "Refresh sessions"),
+            ("⌘\\", "Split pane right"),
+            ("⌘W", "Close current pane"),
             ("⌘1–9", "Jump to session (sidebar order)"),
             ("⌘=", "Increase font size"),
             ("⌘−", "Decrease font size"),
