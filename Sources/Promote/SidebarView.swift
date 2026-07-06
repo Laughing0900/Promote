@@ -6,6 +6,7 @@ struct SidebarView: View {
     @ObservedObject var store: SessionStore
 
     @State private var pendingDelete: String?
+    @State private var hoveredAgent: String?
     @State private var editingSession: String?
     @State private var renameText = ""
     @State private var groupingSession: String?
@@ -155,11 +156,14 @@ struct SidebarView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
 
-                // branch + PR badge share one line; fixed height so badge rows match plain rows
-                HStack(spacing: 4) {
-                    Text(details.branch.map { ":- \($0)" } ?? " ")
-                        .lineLimit(1)
+                // branch on its own line; PR badge gets line 4. Fixed heights keep all rows even.
+                Text(details.branch.map { ":- \($0)" } ?? " ")
+                    .lineLimit(1)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(height: 16, alignment: .leading)
 
+                HStack(spacing: 4) {
                     if let pr = details.pr {
                         Button {
                             if let url = URL(string: pr.url) {
@@ -177,6 +181,8 @@ struct SidebarView: View {
                             .padding(.vertical, 2)
                             .background(pr.state.color, in: Capsule())
                             .foregroundStyle(.white)
+                    } else {
+                        Text(" ")
                     }
                 }
                 .font(.caption)
@@ -381,23 +387,37 @@ struct SidebarView: View {
     }
 
     private func agentRow(_ agent: AgentInfo) -> some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
             Circle()
                 .fill(agent.status.color)
                 .frame(width: 7, height: 7)
+                .padding(.top, 4)
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(agent.session)
+                // ponytail: hard 12-char slice so the top-right tool name never collides
+                Text(agent.session.count > 12 ? agent.session.prefix(12) + "…" : agent.session)
                     .lineLimit(1)
-                Text("\(agent.status.title) · \(agent.tool)")
+                Text(agent.status.title)
                     .font(.caption)
                     .foregroundStyle(agent.status.color)
             }
 
-            Spacer(minLength: 0)
+            Spacer(minLength: 4)
+
+            Text(agent.tool)
+                .font(.caption)
+                .foregroundStyle(agent.status.color)
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
+        .padding(.horizontal, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.primary.opacity(hoveredAgent == agent.paneId ? 0.08 : 0))
+        )
         .contentShape(Rectangle())
+        .onHover { inside in
+            hoveredAgent = inside ? agent.paneId : nil
+        }
         .onTapGesture {
             store.selected = agent.session
         }
