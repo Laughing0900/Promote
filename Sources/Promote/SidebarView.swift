@@ -156,13 +156,7 @@ struct SidebarView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
 
-                // branch on its own line; PR badge gets line 4. Fixed heights keep all rows even.
-                Text(details.branch.map { ":- \($0)" } ?? " ")
-                    .lineLimit(1)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(height: 16, alignment: .leading)
-
+                // PR badge line; branch is in the context menu (Copy Branch Name)
                 HStack(spacing: 4) {
                     if let pr = details.pr {
                         Button {
@@ -265,6 +259,12 @@ struct SidebarView: View {
             NSPasteboard.general.setString(session.path, forType: .string)
         }
         .disabled(session.path.isEmpty)
+
+        Button("Copy Branch Name") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(store.details(for: session.name).branch ?? "", forType: .string)
+        }
+        .disabled(store.details(for: session.name).branch == nil)
 
         Divider()
 
