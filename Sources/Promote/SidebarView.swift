@@ -162,6 +162,11 @@ struct SidebarView: View {
                         Text(session.name)
                             .lineLimit(1)
                             .font(.body.weight(.medium))
+                            .foregroundStyle(
+                                hoveredSession == session.name && !isSelected
+                                    ? Color.accentColor
+                                    : Color.primary
+                            )
                     }
 
                     // always render dir/git/pr lines (blank when absent) so every row is the same height
@@ -249,18 +254,6 @@ struct SidebarView: View {
                 store.selected = session.name
             }
         }
-        // listRowBackground spans the full row cell; native selection pill is inset
-        // within it — pad to match the pill (eyeballed against macOS 14 sidebar)
-        .listRowBackground(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(
-                    hoveredSession == session.name && !isSelected
-                        ? Color.primary.opacity(0.08)
-                        : Color.clear
-                )
-                .padding(.horizontal, 6)
-                .padding(.vertical, 4)
-        )
     }
 
     @ViewBuilder
