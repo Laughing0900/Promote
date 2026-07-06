@@ -27,7 +27,8 @@ final class SessionStore: ObservableObject {
 
     private let agentTools: Set<String> = ["claude", "pi", "opencode", "codex"]
     private let wrapperCommands: Set<String> = ["node", "bun", "sh"]
-    private let blockedPrompts: [String] = ["Do you want", "Allow command", "(y/n)", "y/N"]
+    // permission prompts + AskUserQuestion picker footer
+    private let blockedPrompts: [String] = ["Do you want", "Allow command", "(y/n)", "y/N", "Enter to select"]
     // Only the literal busy footer (claude/cursor). Generic words ("running", "thinking")
     // false-positive on normal transcript text and pin status at working.
     private let workingPrompts: [String] = ["esc to interrupt"]
@@ -346,6 +347,16 @@ final class SessionStore: ObservableObject {
             // split-window wants a pane target; "=name:" = exact session, active window
             // -c expands relative to the target pane, so new pane inherits its cwd
             _ = Shell.tmux("split-window", "-h", "-t", "=" + selected + ":", "-c", "#{pane_current_path}")
+            self.refresh()
+        }
+    }
+
+    // split the selected session's active window vertically (new pane below)
+    func splitPaneDown() {
+        guard let selected else { return }
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            _ = Shell.tmux("split-window", "-v", "-t", "=" + selected + ":", "-c", "#{pane_current_path}")
             self.refresh()
         }
     }
