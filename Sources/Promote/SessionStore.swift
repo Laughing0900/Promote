@@ -28,7 +28,9 @@ final class SessionStore: ObservableObject {
     private let agentTools: Set<String> = ["claude", "pi", "opencode", "codex"]
     private let wrapperCommands: Set<String> = ["node", "bun", "sh"]
     private let blockedPrompts: [String] = ["Do you want", "Allow command", "(y/n)", "y/N"]
-    private let workingPrompts: [String] = ["esc to interrupt", "thinking", "running", "processing"]
+    // Only the literal busy footer (claude/cursor). Generic words ("running", "thinking")
+    // false-positive on normal transcript text and pin status at working.
+    private let workingPrompts: [String] = ["esc to interrupt"]
 
     // MARK: - Derived state
 
