@@ -17,6 +17,12 @@ enum Settings {
         set { d.set(newValue, forKey: "sessionGroups") }
     }
 
+    // session names whose panes can't be closed/killed
+    static var locked: [String] {
+        get { d.stringArray(forKey: "sessionLocked") ?? [] }
+        set { d.set(newValue, forKey: "sessionLocked") }
+    }
+
     // manual sidebar order (session names)
     static var order: [String] {
         get { d.stringArray(forKey: "sessionOrder") ?? [] }
