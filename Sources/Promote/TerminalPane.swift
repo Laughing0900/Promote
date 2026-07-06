@@ -1,6 +1,26 @@
 import SwiftUI
 import SwiftTerm
 
+// SwiftTerm has no drop support; register for file drops and paste shell-escaped paths
+final class DroppableTerminalView: LocalProcessTerminalView {
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        registerForDraggedTypes([.fileURL])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { .copy }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self]) as? [URL] ?? []
+        guard !urls.isEmpty else { return false }
+        let text = urls.map { "'" + $0.path.replacingOccurrences(of: "'", with: "'\\''") + "' " }.joined()
+        send(txt: text)
+        return true
+    }
+}
+
 // SwiftTerm wrapper that attaches to one tmux session
 struct TerminalPane: NSViewRepresentable {
     let session: String
@@ -10,8 +30,8 @@ struct TerminalPane: NSViewRepresentable {
         Coordinator()
     }
 
-    func makeNSView(context: Context) -> LocalProcessTerminalView {
-        let term = LocalProcessTerminalView(frame: .zero)
+    func makeNSView(context: Context) -> DroppableTerminalView {
+        let term = DroppableTerminalView(frame: .zero)
         term.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
         // debug builds print "Info: Unhandled DECSET ..." for escape codes
         // SwiftTerm doesn't know (2031 color-scheme, 7727 app-escape); silence
@@ -31,7 +51,7 @@ struct TerminalPane: NSViewRepresentable {
         return term
     }
 
-    func updateNSView(_ view: LocalProcessTerminalView, context: Context) {
+    func updateNSView(_ view: DroppableTerminalView, context: Context) {
         let currentSize = view.font.pointSize
         if abs(currentSize - fontSize) > 0.001 {
             view.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
