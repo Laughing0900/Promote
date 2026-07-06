@@ -86,6 +86,13 @@ final class SessionStore: ObservableObject {
 
     private func performRefreshPass() {
         let snapshotSessions = querySessions()
+
+        // publish sessions before the slow git/gh pass so first paint doesn't wait on the network
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.applySnapshot(sessions: snapshotSessions, details: self.details, agents: self.agents)
+        }
+
         var snapshotDetails: [String: SessionDetails] = [:]
 
         for session in snapshotSessions {
