@@ -28,7 +28,7 @@ All code in `Sources/Promote/`, one file per concern:
 
 ### Data flow
 
-Timer (2s) → `store.refresh()` → `tmux list-sessions -F "#S\t#{pane_current_path}"` builds the session list → per session, `fetchDetails` on a private serial queue runs `git branch --show-current` and `gh pr view` (cached 60s per path in `prCache`) → publishes to `details` on main. Use the active pane's path, not `#{session_path}` — the latter is the stale session start dir.
+Timer (2s) → `store.refresh()` → `tmux list-panes -a -F "#{session_name}\t#{pane_current_path}"` builds the session list (first pane per session = leftmost pane wins, so splits don't change the sidebar path) → per session, `fetchDetails` on a private serial queue runs `git branch --show-current` and `gh pr view` (cached 60s per path in `prCache`) → publishes to `details` on main. Don't use `#{session_path}` — it's the stale session start dir.
 
 Per-session metadata (colors, groups, manual sort order, font size) persists in `UserDefaults`, keyed by session *name* — renames must migrate all three (see `rename()`).
 

@@ -140,5 +140,7 @@ struct PromoteApp: App {
 
 // SPM executable: promote to foreground GUI app
 NSApplication.shared.setActivationPolicy(.regular)
+// ponytail: force dark — terminal is dark-only, light-mode sidebar clashes; theme both if light mode ever matters
+NSApp.appearance = NSAppearance(named: .darkAqua)
 NSApplication.shared.activate(ignoringOtherApps: true)
 PromoteApp.main()
