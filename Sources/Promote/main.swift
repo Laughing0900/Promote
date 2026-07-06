@@ -5,6 +5,8 @@ import AppKit
 struct RootView: View {
     @ObservedObject var store: SessionStore
     @State private var sidebarVisibility: NavigationSplitViewVisibility = .all
+    @State private var cmdHeld = false
+    @State private var flagsMonitor: Any?
 
     // ponytail: poll tmux every 2s; move to hooks/control-mode only if needed
     private let timer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
@@ -25,10 +27,34 @@ struct RootView: View {
                     .transition(.opacity)
             }
         }
+        .overlay(alignment: .bottom) {
+            if cmdHeld && !store.showCheatSheet {
+                Text("⌘ ,  for Shortcuts")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(.bottom, 14)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+            }
+        }
         .onAppear {
             store.refresh()
             DispatchQueue.main.async {
                 installTitlebarButtons(store: store)
+            }
+            // local monitor: terminal NSView owns key focus, SwiftUI modifiers don't fire
+            flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+                cmdHeld = event.modifierFlags.contains(.command)
+                return event
+            }
+        }
+        .onDisappear {
+            if let flagsMonitor {
+                NSEvent.removeMonitor(flagsMonitor)
+                self.flagsMonitor = nil
             }
         }
         .onReceive(timer) { _ in

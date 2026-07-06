@@ -81,6 +81,7 @@ struct SidebarView: View {
 
                 if idx > 0 {
                     Divider()
+                        .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
                         .selectionDisabled()
                 }
 
@@ -114,6 +115,7 @@ struct SidebarView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .contentMargins(.top, 2, for: .scrollContent)
     }
 
     @ViewBuilder
@@ -336,9 +338,9 @@ struct SidebarView: View {
     }
 
     private var agentsPanel: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 4) {
             Divider()
-                .frame(height: 9)
+                .frame(height: 7)
                 .contentShape(Rectangle())
                 .onHover { inside in
                     if inside {
@@ -382,7 +384,7 @@ struct SidebarView: View {
                 .padding(.horizontal, 12)
             }
         }
-        .padding(.bottom, 10)
+        .padding(.bottom, 6)
         .frame(height: agentsPanelHeight)
     }
 
