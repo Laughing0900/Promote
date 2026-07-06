@@ -149,23 +149,18 @@ struct SidebarView: View {
                         .font(.body.weight(.medium))
                 }
 
-                if !session.path.isEmpty {
-                    Text(shortPath(session.path))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+                // always render dir/git/pr lines (blank when absent) so every row is the same height
+                Text(session.path.isEmpty ? " " : shortPath(session.path))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
 
-                if let branch = details.branch {
-                    // Text(branch)
-                    Text(":- \(branch)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                // branch + PR badge share one line; fixed height so badge rows match plain rows
+                HStack(spacing: 4) {
+                    Text(details.branch.map { ":- \($0)" } ?? " ")
                         .lineLimit(1)
-                }
 
-                if let pr = details.pr {
-                    HStack(spacing: 4) {
+                    if let pr = details.pr {
                         Button {
                             if let url = URL(string: pr.url) {
                                 NSWorkspace.shared.open(url)
@@ -183,9 +178,10 @@ struct SidebarView: View {
                             .background(pr.state.color, in: Capsule())
                             .foregroundStyle(.white)
                     }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(height: 16, alignment: .leading)
 
             }
 
@@ -258,10 +254,28 @@ struct SidebarView: View {
             NSPasteboard.general.setString(session.name, forType: .string)
         }
 
+        Button("Copy Path") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(session.path, forType: .string)
+        }
+        .disabled(session.path.isEmpty)
+
+        Divider()
+
         Button("Reveal in Finder") {
             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: session.path)])
         }
         .disabled(session.path.isEmpty)
+
+        Button("Open in VS Code") {
+            let dir = URL(fileURLWithPath: session.path)
+            if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.microsoft.VSCode") {
+                NSWorkspace.shared.open([dir], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
+            }
+        }
+        .disabled(session.path.isEmpty)
+
+        Divider()
 
         Menu("Color") {
             ForEach(palette) { entry in

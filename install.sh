@@ -40,7 +40,12 @@ if [ -f icon.jpg ]; then
 fi
 
 cp .build/release/Promote "$APP/Contents/MacOS/Promote"
-codesign --force --sign - "$APP"
+
+# Stable signature keeps TCC grants (Desktop access etc.) across rebuilds; ad-hoc re-prompts every build.
+# One-time setup: Keychain Access > Certificate Assistant > Create a Certificate...
+#   Name: promote-dev, Identity Type: Self-Signed Root, Certificate Type: Code Signing
+SIGN_ID=$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/promote-dev/ {print $2; exit}')
+codesign --force --sign "${SIGN_ID:--}" "$APP"
 
 rm -rf /Applications/Promote.app
 cp -R "$APP" /Applications/

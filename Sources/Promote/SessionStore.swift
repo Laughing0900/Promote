@@ -135,14 +135,17 @@ final class SessionStore: ObservableObject {
     }
 
     private func querySessions() -> [Session] {
-        let out = Shell.tmux("list-sessions", "-F", "#S\t#{pane_current_path}") ?? ""
+        // list-panes so path comes from the FIRST pane (leftmost), not the active one
+        let out = Shell.tmux("list-panes", "-a", "-F", "#{session_name}\t#{pane_current_path}") ?? ""
 
+        var seen = Set<String>()
         var parsed: [Session] = out
             .split(whereSeparator: \.isNewline)
             .compactMap { line in
                 let parts = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
                 guard let first = parts.first, !first.isEmpty else { return nil }
                 let name = String(first)
+                guard seen.insert(name).inserted else { return nil }
                 let path = parts.count > 1 ? String(parts[1]) : ""
                 return Session(name: name, path: path)
             }
@@ -332,7 +335,8 @@ final class SessionStore: ObservableObject {
         workerQueue.async { [weak self] in
             guard let self else { return }
             // split-window wants a pane target; "=name:" = exact session, active window
-            _ = Shell.tmux("split-window", "-h", "-t", "=" + selected + ":")
+            // -c expands relative to the target pane, so new pane inherits its cwd
+            _ = Shell.tmux("split-window", "-h", "-t", "=" + selected + ":", "-c", "#{pane_current_path}")
             self.refresh()
         }
     }
