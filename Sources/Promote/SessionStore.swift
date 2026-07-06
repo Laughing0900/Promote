@@ -13,9 +13,6 @@ final class SessionStore: ObservableObject {
     @Published var pendingCloseLastPane: String?
     @Published var showCheatSheet = false
     @Published private(set) var agents: [AgentInfo] = []
-    @Published var searchText = ""
-    @Published private(set) var isRefreshing = false
-    @Published private(set) var lastRefresh: Date?
 
     let defaultGroup = ""
 
@@ -39,7 +36,7 @@ final class SessionStore: ObservableObject {
     // MARK: - Derived state
 
     var grouped: [(String, [Session])] {
-        sections(from: filteredSessions())
+        sections(from: sessions)
     }
 
     var hotkeyOrderedSessions: [Session] {
@@ -53,10 +50,6 @@ final class SessionStore: ObservableObject {
             return normalizedGroupName(value)
         }
         return Array(Set(names)).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-    }
-
-    var hasSearch: Bool {
-        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     func details(for sessionName: String) -> SessionDetails {
@@ -83,7 +76,6 @@ final class SessionStore: ObservableObject {
                 return
             }
             self.refreshInFlight = true
-            DispatchQueue.main.async { self.isRefreshing = true }
             self.performRefreshPass()
         }
     }
@@ -117,10 +109,6 @@ final class SessionStore: ObservableObject {
                 return
             }
             self.refreshInFlight = false
-            DispatchQueue.main.async {
-                self.isRefreshing = false
-                self.lastRefresh = Date()
-            }
         }
     }
 
@@ -379,7 +367,6 @@ final class SessionStore: ObservableObject {
 
     // split the selected session's active window horizontally (new pane on the right)
     func splitPaneRight() {
-        NSLog("DEBUG splitPaneRight selected=\(selected ?? "nil")")
         guard let selected else { return }
         workerQueue.async { [weak self] in
             guard let self else { return }
@@ -493,20 +480,8 @@ final class SessionStore: ObservableObject {
         saveGroups()
     }
 
-    func removeGroup(named groupName: String) {
-        let normalized = normalizedGroupName(groupName)
-        guard let normalized else { return }
-
-        let keys = groups.keys.filter { groups[$0] == normalized }
-        for key in keys {
-            groups.removeValue(forKey: key)
-        }
-        saveGroups()
-    }
-
     // Drag-drop reorder. Index is within the destination group's visible rows.
     func handleDrop(name: String, group: String?, at index: Int) {
-        guard !hasSearch else { return } // avoid ambiguous reorder while filtering
         guard let moving = sessions.first(where: { $0.name == name }) else { return }
 
         let normalizedGroup = normalizedGroupName(group)
@@ -543,19 +518,6 @@ final class SessionStore: ObservableObject {
     }
 
     // MARK: - Private helpers
-
-    private func filteredSessions() -> [Session] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !query.isEmpty else { return sessions }
-
-        return sessions.filter { session in
-            if session.name.lowercased().contains(query) { return true }
-            if session.path.lowercased().contains(query) { return true }
-            if let branch = details[session.name]?.branch?.lowercased(), branch.contains(query) { return true }
-            if let pr = details[session.name]?.pr, "#\(pr.number)".contains(query) { return true }
-            return false
-        }
-    }
 
     private func sections(from source: [Session]) -> [(String, [Session])] {
         guard !source.isEmpty else { return [(defaultGroup, [])] }
