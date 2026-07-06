@@ -148,6 +148,9 @@ struct PromoteApp: App {
                 Button("Split Pane Right") { store.splitPaneRight() }
                     .keyboardShortcut("\\", modifiers: .command)
 
+                Button("Split Pane Down") { store.splitPaneDown() }
+                    .keyboardShortcut("\\", modifiers: [.command, .shift])
+
                 Divider()
 
                 ForEach(1..<10, id: \.self) { index in
