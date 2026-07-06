@@ -32,12 +32,7 @@ struct PRInfo: Equatable, Hashable {
 struct SessionDetails: Equatable {
     var branch: String?
     var pr: PRInfo?
-
-    var isEmpty: Bool { branch == nil && pr == nil }
 }
-
-// Backward compatibility for existing UI files while we refactor.
-typealias Details = SessionDetails
 
 enum AgentStatus: String, CaseIterable {
     case working, idle, blocked, done
@@ -50,15 +45,6 @@ enum AgentStatus: String, CaseIterable {
         case .idle: return .gray
         case .blocked: return colorFromHex("#DA2C43") ?? .red
         case .done: return .blue
-        }
-    }
-
-    var symbol: String {
-        switch self {
-        case .working: return "clock.arrow.circlepath"
-        case .idle: return "pause.circle"
-        case .blocked: return "hand.raised.circle"
-        case .done: return "checkmark.circle"
         }
     }
 }

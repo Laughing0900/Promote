@@ -42,13 +42,3 @@ struct Shell {
         run(TMUX, args)
     }
 }
-
-@discardableResult
-func run(_ exe: String, _ args: [String], cwd: String? = nil) -> String? {
-    Shell.run(exe, args, cwd: cwd)
-}
-
-@discardableResult
-func tmux(_ args: String...) -> String? {
-    Shell.tmux(args)
-}

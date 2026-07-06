@@ -15,6 +15,23 @@ final class ColorPanelBridge: NSObject {
         panel.isContinuous = true
         panel.orderFrontRegardless()
         panel.makeKey()
+
+        // drop the callback when the panel closes so a later reopen can't
+        // recolor the previous session
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(panelWillClose(_:)),
+            name: NSWindow.willCloseNotification,
+            object: panel
+        )
+    }
+
+    @objc
+    private func panelWillClose(_ note: Notification) {
+        onPick = nil
+        NotificationCenter.default.removeObserver(
+            self, name: NSWindow.willCloseNotification, object: note.object
+        )
     }
 
     @objc

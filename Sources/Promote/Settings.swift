@@ -38,9 +38,4 @@ enum Settings {
         get { d.object(forKey: "agentsPanelHeight") as? Double ?? 160 }
         set { d.set(newValue, forKey: "agentsPanelHeight") }
     }
-
-    static var sidebarWidth: Double {
-        get { d.object(forKey: "sidebarWidth") as? Double ?? 260 }
-        set { d.set(newValue, forKey: "sidebarWidth") }
-    }
 }

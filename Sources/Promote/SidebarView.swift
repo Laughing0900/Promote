@@ -73,18 +73,24 @@ struct SidebarView: View {
     }
 
     private var sessionList: some View {
-        // min row height 1: rows size to content; without this the divider row pads to ~24px
+        // min row height 1: rows size to content; no forced 24px spacer rows
         List(selection: $store.selected) {
-            ForEach(Array(store.grouped.enumerated()), id: \.offset) { idx, groupEntry in
+            // zero-height dummy row soaks up the List's first-row top inset,
+            // so the real first row sits at normal inter-row spacing
+            Color.clear
+                .frame(height: 0)
+                .listRowInsets(EdgeInsets())
+                .selectionDisabled()
+
+            ForEach(Array(store.grouped.enumerated()), id: \.element.0) { idx, groupEntry in
                 let groupName = groupEntry.0
                 let isDefaultGroup = groupName == store.defaultGroup
                 let sessions = groupEntry.1
 
+                // divider as its own non-selectable row so hover/selection pills never cover it
                 if idx > 0 {
                     Divider()
-                        .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
-                        // divider row otherwise sits at defaultMinListRowHeight (~24px of dead space)
-                        .frame(height: 5)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 2, trailing: 8))
                         .selectionDisabled()
                 }
 
@@ -97,7 +103,6 @@ struct SidebarView: View {
                         .onDrag { NSItemProvider(object: session.name as NSString) }
                 }
                 .onInsert(of: [.utf8PlainText, .plainText]) { index, providers in
-                    guard !store.hasSearch else { return }
                     providers.first?.loadObject(ofClass: NSString.self) { object, _ in
                         guard let name = object as? String else { return }
                         DispatchQueue.main.async {
@@ -112,7 +117,7 @@ struct SidebarView: View {
             }
 
             if store.grouped.flatMap(\.1).isEmpty {
-                Text(store.hasSearch ? "No matching sessions" : "No tmux sessions")
+                Text("No tmux sessions")
                     .foregroundStyle(.secondary)
                     .selectionDisabled()
             }
@@ -121,7 +126,7 @@ struct SidebarView: View {
         .environment(\.defaultMinListRowHeight, 1)
         .contentMargins(.top, 0, for: .scrollContent)
         // contentMargins clamps at 0; negative frame padding is what actually eats the List's top inset
-        .padding(.top, -14)
+        .padding(.top, -34)
     }
 
     @ViewBuilder
@@ -133,8 +138,7 @@ struct SidebarView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
             }
-            // zero vertical insets: default row insets + padding made the header eat ~10px extra
-            .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
+            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 8))
             .selectionDisabled()
         }
     }
@@ -145,116 +149,118 @@ struct SidebarView: View {
         let isSelected = store.selected == session.name
         let agentStatus = summarizedAgentStatus(for: session.name)
 
-        HStack(alignment: .top, spacing: 8) {
-            VStack(alignment: .leading, spacing: 3) {
-                if editingSession == session.name {
-                    TextField("Session Name", text: $renameText)
-                        .textFieldStyle(.roundedBorder)
-                        .focused($renameFocused)
-                        .onSubmit { commitRename(old: session.name) }
-                        .onExitCommand { editingSession = nil }
-                } else {
-                    Text(session.name)
-                        .lineLimit(1)
-                        .font(.body.weight(.medium))
-                }
+        VStack(alignment: .leading) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    if editingSession == session.name {
+                        TextField("Session Name", text: $renameText)
+                            .textFieldStyle(.roundedBorder)
+                            .focused($renameFocused)
+                            .onSubmit { commitRename(old: session.name) }
+                            .onExitCommand { editingSession = nil }
+                    } else {
+                        Text(session.name)
+                            .lineLimit(1)
+                            .font(.body.weight(.medium))
+                    }
 
-                // always render dir/git/pr lines (blank when absent) so every row is the same height
-                Text(session.path.isEmpty ? " " : shortPath(session.path))
+                    // always render dir/git/pr lines (blank when absent) so every row is the same height
+                    Text(session.path.isEmpty ? " " : shortPath(session.path))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+
+                    // PR badge line; branch is in the context menu (Copy Branch Name)
+                    HStack(spacing: 4) {
+                        if let pr = details.pr {
+                            Button {
+                                if let url = URL(string: pr.url) {
+                                    NSWorkspace.shared.open(url)
+                                }
+                            } label: {
+                                Text("#\(pr.number)")
+                                    .underline()
+                            }
+                            .buttonStyle(.plain)
+
+                            Text(pr.state.label)
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(pr.state.color, in: Capsule())
+                                .foregroundStyle(.white)
+                        } else {
+                            Text(" ")
+                        }
+                    }
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .frame(height: 16, alignment: .leading)
 
-                // PR badge line; branch is in the context menu (Copy Branch Name)
-                HStack(spacing: 4) {
-                    if let pr = details.pr {
-                        Button {
-                            if let url = URL(string: pr.url) {
-                                NSWorkspace.shared.open(url)
-                            }
-                        } label: {
-                            Text("#\(pr.number)")
-                                .underline()
+                }
+
+                Spacer(minLength: 0)
+
+                HStack(alignment: .top, spacing: 6) {
+                    VStack(alignment: .trailing, spacing: 3) {
+                        if store.locked.contains(session.name) {
+                            Image(systemName: "lock.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .help("Locked: pane can't be closed")
                         }
-                        .buttonStyle(.plain)
 
-                        Text(pr.state.label)
-                            .font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(pr.state.color, in: Capsule())
-                            .foregroundStyle(.white)
-                    } else {
-                        Text(" ")
+                        if let agentStatus {
+                            StatusDot(status: agentStatus)
+                                .help("Agent: \(agentStatus.title)")
+                        }
+
+                        Spacer(minLength: 0)
+
+                        if (cmdHeld || hoveredSession == session.name),
+                           let index = hotkeyIndexBySession[session.name] {
+                            Text("\(index)")
+                                .font(.caption.monospacedDigit().bold())
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(Color.primary.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
+                        }
                     }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(height: 16, alignment: .leading)
+                    .frame(maxHeight: .infinity, alignment: .trailing)
 
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(store.color(of: session.name) ?? .clear)
+                        .frame(width: 4)
+                        .frame(maxHeight: .infinity)
+                }
             }
-
-            Spacer(minLength: 0)
-
-            HStack(alignment: .top, spacing: 6) {
-                VStack(alignment: .trailing, spacing: 3) {
-                    if store.locked.contains(session.name) {
-                        Image(systemName: "lock.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .help("Locked: pane can't be closed")
-                    }
-
-                    if let agentStatus {
-                        Circle()
-                            .fill(agentStatus.color)
-                            .frame(width: 8, height: 8)
-                            .help("Agent: \(agentStatus.title)")
-                    }
-
-                    Spacer(minLength: 0)
-
-                    if (cmdHeld || hoveredSession == session.name),
-                       let index = hotkeyIndexBySession[session.name] {
-                        Text("\(index)")
-                            .font(.caption.monospacedDigit().bold())
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(Color.primary.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
-                    }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 3)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if inside {
+                    hoveredSession = session.name
+                } else if hoveredSession == session.name {
+                    hoveredSession = nil
                 }
-                .frame(maxHeight: .infinity, alignment: .trailing)
-
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(store.color(of: session.name) ?? .clear)
-                    .frame(width: 4)
-                    .frame(maxHeight: .infinity)
+            }
+            .onTapGesture {
+                store.selected = session.name
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 3)
-        .background(
+        // listRowBackground spans the full row cell; native selection pill is inset
+        // within it — pad to match the pill (eyeballed against macOS 14 sidebar)
+        .listRowBackground(
             RoundedRectangle(cornerRadius: 8)
                 .fill(
                     hoveredSession == session.name && !isSelected
                         ? Color.primary.opacity(0.08)
                         : Color.clear
                 )
-                // draw over the listRowInsets so hover pill = selection pill width
-                .padding(.horizontal, -8)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
         )
-        .contentShape(Rectangle())
-        .onHover { inside in
-            if inside {
-                hoveredSession = session.name
-            } else if hoveredSession == session.name {
-                hoveredSession = nil
-            }
-        }
-        .onTapGesture {
-            store.selected = session.name
-        }
     }
 
     @ViewBuilder
@@ -262,7 +268,8 @@ struct SidebarView: View {
         Button("Rename") {
             renameText = session.name
             editingSession = session.name
-            renameFocused = true
+            // TextField isn't in the hierarchy yet this tick; focus next runloop pass
+            DispatchQueue.main.async { renameFocused = true }
         }
 
         Button("Copy Name") {
@@ -377,7 +384,6 @@ struct SidebarView: View {
                             }
                             let resized = (dragBaseHeight ?? agentsPanelHeight) - value.translation.height
                             agentsPanelHeight = min(500, max(80, resized))
-                            Settings.agentsPanelHeight = agentsPanelHeight
                         }
                         .onEnded { _ in
                             dragBaseHeight = nil
@@ -410,9 +416,7 @@ struct SidebarView: View {
 
     private func agentRow(_ agent: AgentInfo) -> some View {
         HStack(alignment: .top, spacing: 8) {
-            Circle()
-                .fill(agent.status.color)
-                .frame(width: 7, height: 7)
+            StatusDot(status: agent.status, size: 7)
                 .padding(.top, 4)
 
             VStack(alignment: .leading, spacing: 1) {
@@ -428,7 +432,7 @@ struct SidebarView: View {
 
             Text(agent.tool)
                 .font(.caption)
-                .foregroundStyle(agent.status.color)
+                .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 6)
@@ -491,3 +495,27 @@ struct SidebarView: View {
         return image
     }
 }
+
+// status dot; pulses while the agent is working
+struct StatusDot: View {
+    let status: AgentStatus
+    var size: CGFloat = 8
+
+    var body: some View {
+        if status == .working {
+            Circle()
+                .fill(status.color)
+                .frame(width: size, height: size)
+                .phaseAnimator([1.0, 0.35]) { dot, opacity in
+                    dot.opacity(opacity)
+                } animation: { _ in
+                    .easeInOut(duration: 0.7)
+                }
+        } else {
+            Circle()
+                .fill(status.color)
+                .frame(width: size, height: size)
+        }
+    }
+}
+
