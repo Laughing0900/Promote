@@ -8,6 +8,9 @@ final class SessionStore: ObservableObject {
     @Published private(set) var details: [String: SessionDetails] = [:]
     @Published var colors: [String: String] = Settings.colors
     @Published var groups: [String: String] = Settings.groups
+    @Published var locked: Set<String> = Set(Settings.locked)
+    // set when ⌘W would kill the session (last pane); RootView shows the confirm dialog
+    @Published var pendingCloseLastPane: String?
     @Published var showCheatSheet = false
     @Published private(set) var agents: [AgentInfo] = []
     @Published var searchText = ""
@@ -27,8 +30,8 @@ final class SessionStore: ObservableObject {
 
     private let agentTools: Set<String> = ["claude", "pi", "opencode", "codex"]
     private let wrapperCommands: Set<String> = ["node", "bun", "sh"]
-    // permission prompts + AskUserQuestion picker footer
-    private let blockedPrompts: [String] = ["Do you want", "Allow command", "(y/n)", "y/N", "Enter to select"]
+    // permission prompts + AskUserQuestion picker footer (matched against lowercased prompt region)
+    private let blockedPrompts: [String] = ["do you want", "allow command", "y/n", "enter to select", "esc to cancel"]
     // Only the literal busy footer (claude/cursor). Generic words ("running", "thinking")
     // false-positive on normal transcript text and pin status at working.
     private let workingPrompts: [String] = ["esc to interrupt"]
@@ -213,14 +216,14 @@ final class SessionStore: ObservableObject {
     // MARK: - Agent scan
 
     private func queryAgents() -> [AgentInfo] {
-        let format = "#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{window_activity}\t#{pane_pid}"
+        let format = "#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{window_activity}\t#{pane_pid}\t#{pane_title}"
         let out = Shell.tmux("list-panes", "-a", "-F", format) ?? ""
 
-        let rows: [(session: String, pane: String, command: String, activity: Double, pid: String)] =
+        let rows: [(session: String, pane: String, command: String, activity: Double, pid: String, title: String)] =
             out.split(whereSeparator: \.isNewline).compactMap { line in
                 let parts = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
-                guard parts.count >= 5 else { return nil }
-                return (parts[0], parts[1], parts[2].lowercased(), Double(parts[3]) ?? 0, parts[4])
+                guard parts.count >= 6 else { return nil }
+                return (parts[0], parts[1], parts[2].lowercased(), Double(parts[3]) ?? 0, parts[4], parts[5])
             }
 
         if rows.isEmpty {
@@ -240,7 +243,7 @@ final class SessionStore: ObservableObject {
                 continue
             }
 
-            let status = classifyAgentStatus(pane: row.pane, activity: row.activity, now: now)
+            let status = classifyAgentStatus(pane: row.pane, title: row.title, activity: row.activity, now: now)
             found.append(AgentInfo(paneId: row.pane, session: row.session, tool: tool, status: status))
         }
 
@@ -306,16 +309,29 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    private func classifyAgentStatus(pane: String, activity: Double, now: Double) -> AgentStatus {
-        let tail = Shell.tmux("capture-pane", "-p", "-t", pane, "-S", "-30") ?? ""
+    private func classifyAgentStatus(pane: String, title: String, activity: Double, now: Double) -> AgentStatus {
+        // claude publishes state via OSC title (tmux tracks it as pane_title):
+        // braille spinner U+2800-28FF = working, "✳" = turn finished
+        if let first = title.unicodeScalars.first, (0x2800...0x28FF).contains(first.value) {
+            agentWorked.insert(pane)
+            return .working
+        }
 
-        if blockedPrompts.contains(where: { tail.contains($0) }) {
+        let tail = Shell.tmux("capture-pane", "-p", "-t", pane, "-S", "-30") ?? ""
+        let region = promptRegion(of: tail).lowercased()
+
+        if blockedPrompts.contains(where: { region.contains($0) }) {
             return .blocked
         }
 
+        if title.hasPrefix("✳") {
+            return agentWorked.contains(pane) ? .done : .idle
+        }
+
+        // no title signal (codex/opencode/cursor): activity + busy-footer fallback
         let isRecent = (now - activity) < 2.5
         let hasWorkingPrompt = workingPrompts.contains { token in
-            tail.localizedCaseInsensitiveContains(token)
+            region.contains(token)
         }
 
         if isRecent || hasWorkingPrompt {
@@ -326,14 +342,36 @@ final class SessionStore: ObservableObject {
         return agentWorked.contains(pane) ? .done : .idle
     }
 
+    // claude draws its input/permission UI in a "╭─" box at the bottom; scanning only from the
+    // last box top down keeps transcript text (quoted prompts, old dialogs) from false-positiving.
+    // ponytail: whole tail when no box found (codex/opencode draw no boxes)
+    private func promptRegion(of tail: String) -> String {
+        let lines = tail.split(whereSeparator: \.isNewline)
+        guard let idx = lines.lastIndex(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("╭") }) else {
+            return tail
+        }
+        return lines[idx...].joined(separator: "\n")
+    }
+
     // MARK: - User actions
 
     func newSession() {
+        let current = selected
         workerQueue.async { [weak self] in
             guard let self else { return }
-            let created = Shell.tmux("new-session", "-d", "-P", "-F", "#S")
+            // new session starts in the selected session's active pane cwd (home if none)
+            let cwd = current.flatMap {
+                Shell.tmux("display-message", "-p", "-t", "=" + $0 + ":", "#{pane_current_path}")
+            } ?? NSHomeDirectory()
+            let created = Shell.tmux("new-session", "-d", "-c", cwd, "-P", "-F", "#S")
             if let created {
-                DispatchQueue.main.async { self.selected = created }
+                // optimistic insert: attach terminal now, don't wait a full refresh pass
+                DispatchQueue.main.async {
+                    if !self.sessions.contains(where: { $0.name == created }) {
+                        self.sessions.append(Session(name: created, path: cwd))
+                    }
+                    self.selected = created
+                }
             }
             self.refresh()
         }
@@ -341,6 +379,7 @@ final class SessionStore: ObservableObject {
 
     // split the selected session's active window horizontally (new pane on the right)
     func splitPaneRight() {
+        NSLog("DEBUG splitPaneRight selected=\(selected ?? "nil")")
         guard let selected else { return }
         workerQueue.async { [weak self] in
             guard let self else { return }
@@ -363,9 +402,16 @@ final class SessionStore: ObservableObject {
 
     // kill the selected session's active pane; tmux kills the session when the last pane dies
     func closeActivePane() {
-        guard let selected else { return }
+        guard let selected, !locked.contains(selected) else { return }
         workerQueue.async { [weak self] in
             guard let self else { return }
+            let paneCount = Shell.tmux("list-panes", "-t", "=" + selected)?
+                .split(separator: "\n").count ?? 0
+            if paneCount <= 1 {
+                // last pane: closing kills the session — route through the kill confirm dialog
+                DispatchQueue.main.async { self.pendingCloseLastPane = selected }
+                return
+            }
             _ = Shell.tmux("kill-pane", "-t", "=" + selected + ":")
             self.refresh()
         }
@@ -391,6 +437,10 @@ final class SessionStore: ObservableObject {
                     self.groups[next] = group
                     self.saveGroups()
                 }
+                if self.locked.remove(old) != nil {
+                    self.locked.insert(next)
+                    Settings.locked = Array(self.locked)
+                }
 
                 var order = Settings.order
                 if let idx = order.firstIndex(of: old) {
@@ -408,11 +458,21 @@ final class SessionStore: ObservableObject {
     }
 
     func kill(_ sessionName: String) {
+        guard !locked.contains(sessionName) else { return }
         workerQueue.async { [weak self] in
             guard let self else { return }
             _ = Shell.tmux("kill-session", "-t", "=" + sessionName)
             self.refresh()
         }
+    }
+
+    func setLocked(_ sessionName: String, _ isLocked: Bool) {
+        if isLocked {
+            locked.insert(sessionName)
+        } else {
+            locked.remove(sessionName)
+        }
+        Settings.locked = Array(locked)
     }
 
     func setColor(_ sessionName: String, hex: String?) {

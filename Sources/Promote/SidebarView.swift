@@ -73,6 +73,7 @@ struct SidebarView: View {
     }
 
     private var sessionList: some View {
+        // min row height 1: rows size to content; without this the divider row pads to ~24px
         List(selection: $store.selected) {
             ForEach(Array(store.grouped.enumerated()), id: \.offset) { idx, groupEntry in
                 let groupName = groupEntry.0
@@ -82,6 +83,8 @@ struct SidebarView: View {
                 if idx > 0 {
                     Divider()
                         .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
+                        // divider row otherwise sits at defaultMinListRowHeight (~24px of dead space)
+                        .frame(height: 5)
                         .selectionDisabled()
                 }
 
@@ -115,7 +118,10 @@ struct SidebarView: View {
             }
         }
         .scrollContentBackground(.hidden)
-        .contentMargins(.top, 2, for: .scrollContent)
+        .environment(\.defaultMinListRowHeight, 1)
+        .contentMargins(.top, 0, for: .scrollContent)
+        // contentMargins clamps at 0; negative frame padding is what actually eats the List's top inset
+        .padding(.top, -14)
     }
 
     @ViewBuilder
@@ -127,7 +133,8 @@ struct SidebarView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
             }
-            .padding(.top, 2)
+            // zero vertical insets: default row insets + padding made the header eat ~10px extra
+            .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
             .selectionDisabled()
         }
     }
@@ -190,7 +197,14 @@ struct SidebarView: View {
             Spacer(minLength: 0)
 
             HStack(alignment: .top, spacing: 6) {
-                VStack(alignment: .trailing, spacing: 0) {
+                VStack(alignment: .trailing, spacing: 3) {
+                    if store.locked.contains(session.name) {
+                        Image(systemName: "lock.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .help("Locked: pane can't be closed")
+                    }
+
                     if let agentStatus {
                         Circle()
                             .fill(agentStatus.color)
@@ -332,9 +346,15 @@ struct SidebarView: View {
 
         Divider()
 
+        let isLocked = store.locked.contains(session.name)
+        Button(isLocked ? "Unlock" : "Lock") {
+            store.setLocked(session.name, !isLocked)
+        }
+
         Button("Kill Session", role: .destructive) {
             pendingDelete = session.name
         }
+        .disabled(isLocked)
     }
 
     private var agentsPanel: some View {

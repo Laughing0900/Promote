@@ -60,6 +60,23 @@ struct RootView: View {
         .onReceive(timer) { _ in
             store.refresh()
         }
+        .confirmationDialog(
+            "Kill session \u{201C}\(store.pendingCloseLastPane ?? "")\u{201D}?",
+            isPresented: Binding(
+                get: { store.pendingCloseLastPane != nil },
+                set: { if !$0 { store.pendingCloseLastPane = nil } }
+            )
+        ) {
+            Button("Kill Session", role: .destructive) {
+                if let name = store.pendingCloseLastPane {
+                    store.kill(name)
+                }
+                store.pendingCloseLastPane = nil
+            }
+            Button("Cancel", role: .cancel) {
+                store.pendingCloseLastPane = nil
+            }
+        }
     }
 }
 
@@ -142,6 +159,7 @@ struct PromoteApp: App {
             CommandGroup(replacing: .saveItem) {
                 Button("Close Pane") { store.closeActivePane() }
                     .keyboardShortcut("w", modifiers: .command)
+                    .disabled(store.selected.map { store.locked.contains($0) } ?? true)
             }
 
             CommandMenu("Session") {
