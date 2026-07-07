@@ -409,7 +409,7 @@ struct SidebarView: View {
 
     private func agentRow(_ agent: AgentInfo) -> some View {
         HStack(alignment: .top, spacing: 8) {
-            StatusDot(status: agent.status, size: 7)
+            StatusDot(status: agent.status, size: 14)
                 .padding(.top, 4)
 
             VStack(alignment: .leading, spacing: 1) {
@@ -489,25 +489,83 @@ struct SidebarView: View {
     }
 }
 
-// status dot; pulses while the agent is working
+// pixel hex dot-matrix status icon (rows 3/4/5/4/3):
+// idle = mottled grays, working = rotating loading sweep, done = tick, blocked = cross
 struct StatusDot: View {
     let status: AgentStatus
-    var size: CGFloat = 8
+    var size: CGFloat = 16
+
+    private struct Dot {
+        let key: Int      // row*10+index, for shape lookup
+        let x: Double     // unit coords, 5 columns wide
+        let y: Double
+    }
+
+    private static let dots: [Dot] = {
+        let counts = [3, 4, 5, 4, 3]
+        var out: [Dot] = []
+        for (r, c) in counts.enumerated() {
+            for i in 0..<c {
+                out.append(Dot(key: r * 10 + i,
+                               x: Double(i) + Double(5 - c) / 2.0,
+                               y: Double(r) * 0.87))
+            }
+        }
+        return out
+    }()
+
+    private static let tick: Set<Int> = [20, 30, 40, 31, 22, 12, 2]
+    private static let cross: Set<Int> = [0, 2, 11, 12, 22, 31, 32, 40, 42]
+    private static let idlePattern: Set<Int> = [0, 2, 20, 21, 22, 23, 24, 40, 42]
 
     var body: some View {
         if status == .working {
-            Circle()
-                .fill(status.color)
-                .frame(width: size, height: size)
-                .phaseAnimator([1.0, 0.35]) { dot, opacity in
-                    dot.opacity(opacity)
-                } animation: { _ in
-                    .easeInOut(duration: 0.7)
-                }
+            TimelineView(.animation(minimumInterval: 1.0 / 20)) { tl in
+                matrix(time: tl.date.timeIntervalSinceReferenceDate)
+            }
         } else {
-            Circle()
-                .fill(status.color)
-                .frame(width: size, height: size)
+            matrix(time: 0)
+        }
+    }
+
+    private func matrix(time: TimeInterval) -> some View {
+        Canvas { ctx, sz in
+            let pitch = sz.width / 5
+            let d = pitch * 0.75
+            for dot in Self.dots {
+                let cx = (dot.x + 0.5) * pitch
+                let cy = (dot.y + 0.5) * pitch
+                let rect = CGRect(x: cx - d / 2, y: cy - d / 2, width: d, height: d)
+                ctx.fill(Path(ellipseIn: rect), with: .color(color(for: dot, time: time)))
+            }
+        }
+        .frame(width: size, height: size * 4.48 / 5)
+    }
+
+    private func color(for dot: Dot, time: TimeInterval) -> Color {
+        let dim = Color.primary.opacity(0.12)
+        switch status {
+        case .idle:
+            return Color.primary.opacity(Self.idlePattern.contains(dot.key) ? 0.45 : 0.14)
+        case .done:
+            return Self.tick.contains(dot.key) ? status.color : dim
+        case .blocked:
+            return Self.cross.contains(dot.key) ? status.color : dim
+        case .working:
+            // port of dotm-hex-3 loader (dotmatrix.zzzzshawn.cloud): two diagonal
+            // bands sweep across on a triangular wave, flash when they cross center
+            let x = dot.x - 2.0
+            let y = dot.y - 1.74
+            let phase = (time / 1.276).truncatingRemainder(dividingBy: 1)
+            let tri = 1 - abs(phase * 2 - 1)
+            let sweep = tri * 3.9 - 1.95
+            let glow = { (d: Double) in max(0.0, 1.0 - abs(d) / 0.55) }
+            let gateA = glow(x * 0.86 + y * 0.5 - sweep)
+            let gateB = glow(-x * 0.86 + y * 0.5 + sweep)
+            let centerFlash = max(0, 1 - abs(sweep) / 0.68) * max(0, 1 - (x * x + y * y).squareRoot() / 1.9)
+            let wake = 0.16 * max(0, 1 - abs(y - sweep * 0.22) / 1.2)
+            let o = min(0.96, 0.08 + gateA * 0.7 + gateB * 0.7 + centerFlash * 0.42 + wake)
+            return status.color.opacity(o)
         }
     }
 }
