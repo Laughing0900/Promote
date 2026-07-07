@@ -159,14 +159,23 @@ struct SidebarView: View {
                             .onSubmit { commitRename(old: session.name) }
                             .onExitCommand { editingSession = nil }
                     } else {
-                        Text(session.name)
-                            .lineLimit(1)
-                            .font(.body.weight(.medium))
-                            .foregroundStyle(
-                                hoveredSession == session.name && !isSelected
-                                    ? Color.accentColor
-                                    : Color.primary
-                            )
+                        HStack(spacing: 4) {
+                            if store.locked.contains(session.name) {
+                                Image(systemName: "lock.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .help("Locked: pane can't be closed")
+                            }
+
+                            Text(session.name)
+                                .lineLimit(1)
+                                .font(.body.weight(.medium))
+                                .foregroundStyle(
+                                    hoveredSession == session.name && !isSelected
+                                        ? Color.accentColor
+                                        : Color.primary
+                                )
+                        }
                     }
 
                     // always render dir/git/pr lines (blank when absent) so every row is the same height
@@ -208,13 +217,6 @@ struct SidebarView: View {
 
                 HStack(alignment: .top, spacing: 6) {
                     VStack(alignment: .trailing, spacing: 3) {
-                        if store.locked.contains(session.name) {
-                            Image(systemName: "lock.fill")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .help("Locked: pane can't be closed")
-                        }
-
                         if let agentStatus {
                             StatusDot(status: agentStatus)
                                 .help("Agent: \(agentStatus.title)")
