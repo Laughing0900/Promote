@@ -26,6 +26,7 @@ struct CheatSheetView: View {
             ShortcutRow(keys: ["⌘", "\\"], description: "Split pane right"),
             ShortcutRow(keys: ["⌘", "⇧", "\\"], description: "Split pane down"),
             ShortcutRow(keys: ["⌘", "W"], description: "Close current pane"),
+            ShortcutRow(keys: ["⌘", "⇧", "R"], description: "Reattach terminal (fixes stuck keys)"),
             ShortcutRow(keys: ["⌘", "1-9"], description: "Jump to session (sidebar order)"),
             ShortcutRow(keys: ["⌘", "="], description: "Increase font size"),
             ShortcutRow(keys: ["⌘", "−"], description: "Decrease font size"),
