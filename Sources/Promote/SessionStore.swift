@@ -13,6 +13,8 @@ final class SessionStore: ObservableObject {
     @Published var pendingCloseLastPane: String?
     @Published var showCheatSheet = false
     @Published private(set) var agents: [AgentInfo] = []
+    // bumped to force-rebuild the terminal view (fresh SwiftTerm state; clears stuck kitty keyboard flags)
+    @Published private(set) var terminalEpoch = 0
 
     let defaultGroup = ""
 
@@ -23,6 +25,9 @@ final class SessionStore: ObservableObject {
 
     // workerQueue-only caches
     private var prCache: [String: (Date, PRInfo?)] = [:]
+    private var branchCache: [String: (Date, String?)] = [:]
+    // ponytail: capture-pane is the hot subprocess; reuse each pane's verdict for a few seconds
+    private var paneStatusCache: [String: (at: Double, status: AgentStatus)] = [:]
     private var agentWorked: Set<String> = []
 
     private let agentTools: Set<String> = ["claude", "pi", "opencode", "codex"]
@@ -81,12 +86,20 @@ final class SessionStore: ObservableObject {
     }
 
     private func performRefreshPass() {
-        let snapshotSessions = querySessions()
+        // agents first: node-based agent CLIs (pi/opencode) must not count as dev servers
+        var snapshotAgents = queryAgents()
+        let snapshotSessions = querySessions(agentPanes: Set(snapshotAgents.map(\.paneId)))
+
+        // sort here with the fresh snapshot, not published `sessions` (main-owned, racy off-main)
+        let sidebarRank = Dictionary(uniqueKeysWithValues: snapshotSessions.enumerated().map { ($0.element.name, $0.offset) })
+        snapshotAgents.sort {
+            (sidebarRank[$0.session] ?? .max, $0.paneId) < (sidebarRank[$1.session] ?? .max, $1.paneId)
+        }
 
         // publish sessions before the slow git/gh pass so first paint doesn't wait on the network
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.applySnapshot(sessions: snapshotSessions, details: self.details, agents: self.agents)
+            self.applySnapshot(sessions: snapshotSessions, details: self.details, agents: snapshotAgents)
         }
 
         var snapshotDetails: [String: SessionDetails] = [:]
@@ -94,8 +107,6 @@ final class SessionStore: ObservableObject {
         for session in snapshotSessions {
             snapshotDetails[session.name] = queryDetails(for: session)
         }
-
-        let snapshotAgents = queryAgents()
 
         DispatchQueue.main.async { [weak self] in
             self?.applySnapshot(sessions: snapshotSessions, details: snapshotDetails, agents: snapshotAgents)
@@ -122,8 +133,8 @@ final class SessionStore: ObservableObject {
         let sessionNames = Set(nextSessions.map(\.name))
         if let selected, !sessionNames.contains(selected) {
             self.selected = nextSessions.first?.name
-        } else if selected == nil {
-            self.selected = nextSessions.first?.name
+        } else if selected == nil, let first = nextSessions.first {
+            self.selected = first.name
         }
 
         if details != nextDetails {
@@ -135,21 +146,34 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    private func querySessions() -> [Session] {
+    private func querySessions(agentPanes: Set<String>) -> [Session] {
         // list-panes so path comes from the FIRST pane (leftmost), not the active one
-        let out = Shell.tmux("list-panes", "-a", "-F", "#{session_name}\t#{pane_current_path}") ?? ""
+        let out = Shell.tmux("list-panes", "-a", "-F", "#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{pane_current_path}") ?? ""
 
-        var seen = Set<String>()
-        var parsed: [Session] = out
+        let rows: [(name: String, pane: String, command: String, path: String)] = out
             .split(whereSeparator: \.isNewline)
             .compactMap { line in
-                let parts = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+                let parts = line.split(separator: "\t", maxSplits: 3, omittingEmptySubsequences: false)
                 guard let first = parts.first, !first.isEmpty else { return nil }
-                let name = String(first)
-                guard seen.insert(name).inserted else { return nil }
-                let path = parts.count > 1 ? String(parts[1]) : ""
-                return Session(name: name, path: path)
+                return (String(first),
+                        parts.count > 1 ? String(parts[1]) : "",
+                        parts.count > 2 ? String(parts[2]).lowercased() : "",
+                        parts.count > 3 ? String(parts[3]) : "")
             }
+
+        // ponytail: "server" = any pane whose foreground command looks like a JS runtime/runner.
+        // No port, no listen check; upgrade path is lsof -sTCP:LISTEN against pane pids.
+        // Agent panes are excluded: node-based agent CLIs (pi/opencode) also report "node".
+        let serverCommands = ["node", "npm", "npx", "pnpm", "yarn", "bun", "deno", "next-server", "turbo"]
+        let serving = Set(rows.filter { row in
+            !agentPanes.contains(row.pane) && serverCommands.contains { row.command.hasPrefix($0) }
+        }.map(\.name))
+
+        var seen = Set<String>()
+        var parsed: [Session] = rows.compactMap { row in
+            guard seen.insert(row.name).inserted else { return nil }
+            return Session(name: row.name, path: row.path, serving: serving.contains(row.name))
+        }
 
         let manualOrder = Settings.order
         let rank: (Session) -> Int = { session in
@@ -168,10 +192,19 @@ final class SessionStore: ObservableObject {
         guard !session.path.isEmpty else { return SessionDetails() }
 
         var next = SessionDetails()
-        next.branch = Shell.run(GIT, ["-C", session.path, "branch", "--show-current"])
-        if next.branch?.isEmpty == true { next.branch = nil }
+        next.branch = queryBranch(for: session.path)
         next.pr = queryPRInfo(for: session.path)
         return next
+    }
+
+    private func queryBranch(for path: String) -> String? {
+        if let (cachedAt, cachedValue) = branchCache[path], Date().timeIntervalSince(cachedAt) < 10 {
+            return cachedValue
+        }
+        var branch = Shell.run(GIT, ["-C", path, "branch", "--show-current"])
+        if branch?.isEmpty == true { branch = nil }
+        branchCache[path] = (Date(), branch)
+        return branch
     }
 
     private func queryPRInfo(for path: String) -> PRInfo? {
@@ -216,18 +249,19 @@ final class SessionStore: ObservableObject {
 
         if rows.isEmpty {
             agentWorked.removeAll()
+            paneStatusCache.removeAll()
             return []
         }
 
         let needsProcessSnapshot = rows.contains { wrapperCommands.contains($0.command) }
-        let processes = needsProcessSnapshot ? processSnapshot() : []
+        let childrenByPpid = needsProcessSnapshot ? processSnapshot() : [:]
         let now = Date().timeIntervalSince1970
 
         var found: [AgentInfo] = []
         found.reserveCapacity(rows.count)
 
         for row in rows {
-            guard let tool = resolveAgentTool(command: row.command, panePid: row.pid, ps: processes) else {
+            guard let tool = resolveAgentTool(command: row.command, panePid: row.pid, children: childrenByPpid) else {
                 continue
             }
 
@@ -235,17 +269,17 @@ final class SessionStore: ObservableObject {
             found.append(AgentInfo(paneId: row.pane, session: row.session, tool: tool, status: status))
         }
 
-        agentWorked.formIntersection(Set(found.map(\.paneId)))
+        let livePanes = Set(found.map(\.paneId))
+        agentWorked.formIntersection(livePanes)
+        paneStatusCache = paneStatusCache.filter { livePanes.contains($0.key) }
 
-        let sidebarRank = Dictionary(uniqueKeysWithValues: sessions.enumerated().map { ($0.element.name, $0.offset) })
-        return found.sorted {
-            (sidebarRank[$0.session] ?? .max, $0.paneId) < (sidebarRank[$1.session] ?? .max, $1.paneId)
-        }
+        // caller sorts against the fresh session snapshot; published `sessions` is main-owned
+        return found
     }
 
     private func resolveAgentTool(command: String,
                                   panePid: String,
-                                  ps: [(pid: String, ppid: String, name: String, args: String)]) -> String? {
+                                  children: [String: [(pid: String, name: String, args: String)]]) -> String? {
         if let direct = canonicalTool(from: command) {
             return direct
         }
@@ -258,13 +292,17 @@ final class SessionStore: ObservableObject {
         while let pid = queue.popLast() {
             guard visited.insert(pid).inserted else { continue }
 
-            for child in ps where child.ppid == pid {
+            for child in children[pid] ?? [] {
                 if let resolved = canonicalTool(from: child.name) {
                     return resolved
                 }
                 // cursor CLI's argv0 is the generic "agent"; its script path
                 // (~/.local/share/cursor-agent/...) is the reliable marker
                 if child.args.contains("cursor-agent") { return "cursor" }
+                // node-shebang CLIs (pi, opencode) show argv0 "node"; script path is the marker
+                if let fromPath = agentTools.first(where: {
+                    child.args.range(of: "/\($0)( |$)", options: .regularExpression) != nil
+                }) { return fromPath }
                 queue.append(child.pid)
             }
         }
@@ -281,20 +319,23 @@ final class SessionStore: ObservableObject {
         return nil
     }
 
-    private func processSnapshot() -> [(pid: String, ppid: String, name: String, args: String)] {
+    // one ps pass grouped by ppid, so wrapper resolution is a dictionary walk, not repeated array scans
+    private func processSnapshot() -> [String: [(pid: String, name: String, args: String)]] {
         let out = Shell.run("/bin/ps", ["-axo", "pid=,ppid=,args="]) ?? ""
 
-        return out.split(whereSeparator: \.isNewline).compactMap { line in
+        var children: [String: [(pid: String, name: String, args: String)]] = [:]
+        for line in out.split(whereSeparator: \.isNewline) {
             let fields = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
-            guard fields.count >= 3 else { return nil }
+            guard fields.count >= 3 else { continue }
             let args = String(fields[2]).lowercased()
             let argv0 = fields[2]
                 .split(separator: " ")[0]
                 .split(separator: "/")
                 .last
                 .map(String.init) ?? ""
-            return (String(fields[0]), String(fields[1]), argv0.lowercased(), args)
+            children[String(fields[1]), default: []].append((String(fields[0]), argv0.lowercased(), args))
         }
+        return children
     }
 
     private func classifyAgentStatus(pane: String, title: String, activity: Double, now: Double) -> AgentStatus {
@@ -302,32 +343,33 @@ final class SessionStore: ObservableObject {
         // braille spinner U+2800-28FF = working, "✳" = turn finished
         if let first = title.unicodeScalars.first, (0x2800...0x28FF).contains(first.value) {
             agentWorked.insert(pane)
+            paneStatusCache[pane] = nil  // spinner is live truth; don't serve a stale verdict after it ends
             return .working
+        }
+
+        // ponytail: throttle capture-pane to once per 4s per pane; status can lag up to 4s
+        if let cached = paneStatusCache[pane], now - cached.at < 4 {
+            return cached.status
         }
 
         let tail = Shell.tmux("capture-pane", "-p", "-t", pane, "-S", "-30") ?? ""
         let region = promptRegion(of: tail).lowercased()
 
+        let status: AgentStatus
         if blockedPrompts.contains(where: { region.contains($0) }) {
-            return .blocked
-        }
-
-        if title.hasPrefix("✳") {
-            return agentWorked.contains(pane) ? .done : .idle
-        }
-
-        // no title signal (codex/opencode/cursor): activity + busy-footer fallback
-        let isRecent = (now - activity) < 2.5
-        let hasWorkingPrompt = workingPrompts.contains { token in
-            region.contains(token)
-        }
-
-        if isRecent || hasWorkingPrompt {
+            status = .blocked
+        } else if title.hasPrefix("✳") {
+            status = agentWorked.contains(pane) ? .done : .idle
+        } else if (now - activity) < 2.5 || workingPrompts.contains(where: { region.contains($0) }) {
+            // no title signal (codex/opencode/cursor): activity + busy-footer fallback
             agentWorked.insert(pane)
-            return .working
+            status = .working
+        } else {
+            status = agentWorked.contains(pane) ? .done : .idle
         }
 
-        return agentWorked.contains(pane) ? .done : .idle
+        paneStatusCache[pane] = (now, status)
+        return status
     }
 
     // claude draws its input/permission UI in a "╭─" box at the bottom; scanning only from the
@@ -509,6 +551,11 @@ final class SessionStore: ObservableObject {
 
         sessions = ordered
         saveOrder()
+    }
+
+    // escape hatch for wedged terminal key state: rebuild the SwiftTerm view + reattach
+    func reattachTerminal() {
+        terminalEpoch += 1
     }
 
     func jumpToHotkeyIndex(_ index: Int) {

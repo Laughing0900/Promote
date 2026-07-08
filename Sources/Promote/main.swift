@@ -7,6 +7,7 @@ struct RootView: View {
     @State private var sidebarVisibility: NavigationSplitViewVisibility = .all
     @State private var cmdHeld = false
     @State private var flagsMonitor: Any?
+    @State private var pollTick = 0
 
     // ponytail: poll tmux every 2s; move to hooks/control-mode only if needed
     private let timer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
@@ -58,7 +59,11 @@ struct RootView: View {
             }
         }
         .onReceive(timer) { _ in
-            store.refresh()
+            // ponytail: background app polls at half rate (4s); skip every other tick
+            pollTick += 1
+            if NSApp.isActive || pollTick.isMultiple(of: 2) {
+                store.refresh()
+            }
         }
         .confirmationDialog(
             "Kill session \u{201C}\(store.pendingCloseLastPane ?? "")\u{201D}?",
@@ -102,7 +107,7 @@ private struct DetailPane: View {
     @ViewBuilder
     private func activeSessionView(_ session: Session) -> some View {
         TerminalPane(session: session.name)
-            .id(session.name)
+            .id("\(session.name)#\(store.terminalEpoch)")
     }
 }
 
@@ -157,9 +162,10 @@ struct PromoteApp: App {
 
             // replace the default Close (⌘W closes the window otherwise)
             CommandGroup(replacing: .saveItem) {
+                // no .disabled: SwiftUI menu validation goes stale when the AppKit terminal
+                // owns focus, leaving the item stuck disabled. closeActivePane guards instead.
                 Button("Close Pane") { store.closeActivePane() }
                     .keyboardShortcut("w", modifiers: .command)
-                    .disabled(store.selected.map { store.locked.contains($0) } ?? true)
             }
 
             CommandMenu("Session") {
@@ -168,6 +174,10 @@ struct PromoteApp: App {
 
                 Button("Split Pane Down") { store.splitPaneDown() }
                     .keyboardShortcut("\\", modifiers: [.command, .shift])
+
+                // escape hatch for wedged key handling (stuck kitty keyboard flags in SwiftTerm)
+                Button("Reattach Terminal") { store.reattachTerminal() }
+                    .keyboardShortcut("r", modifiers: [.command, .shift])
 
                 Divider()
 

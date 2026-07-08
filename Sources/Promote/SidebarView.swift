@@ -73,8 +73,10 @@ struct SidebarView: View {
     }
 
     private var sessionList: some View {
+        // grouped filters/sorts every call; compute once per render
+        let grouped = store.grouped
         // min row height 1: rows size to content; no forced 24px spacer rows
-        List(selection: $store.selected) {
+        return List(selection: $store.selected) {
             // zero-height dummy row soaks up the List's first-row top inset,
             // so the real first row sits at normal inter-row spacing
             Color.clear
@@ -82,7 +84,7 @@ struct SidebarView: View {
                 .listRowInsets(EdgeInsets())
                 .selectionDisabled()
 
-            ForEach(Array(store.grouped.enumerated()), id: \.element.0) { idx, groupEntry in
+            ForEach(Array(grouped.enumerated()), id: \.element.0) { idx, groupEntry in
                 let groupName = groupEntry.0
                 let isDefaultGroup = groupName == store.defaultGroup
                 let sessions = groupEntry.1
@@ -116,7 +118,7 @@ struct SidebarView: View {
                 }
             }
 
-            if store.grouped.flatMap(\.1).isEmpty {
+            if grouped.flatMap(\.1).isEmpty {
                 Text("No tmux sessions")
                     .foregroundStyle(.secondary)
                     .selectionDisabled()
@@ -175,6 +177,13 @@ struct SidebarView: View {
                                         ? Color.accentColor
                                         : Color.primary
                                 )
+
+                            if session.serving {
+                                Circle()
+                                    .fill(.green)
+                                    .frame(width: 6, height: 6)
+                                    .help("Dev server running")
+                            }
                         }
                     }
 

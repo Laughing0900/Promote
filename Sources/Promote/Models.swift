@@ -4,6 +4,7 @@ import AppKit
 struct Session: Identifiable, Equatable, Hashable {
     let name: String
     let path: String
+    var serving: Bool = false
 
     var id: String { name }
 }
