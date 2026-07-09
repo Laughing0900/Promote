@@ -19,9 +19,18 @@ final class TerminalLinkRouter: TerminalViewDelegate {
         if !path.hasPrefix("/"), let session,
            // ponytail: resolves against the session's *active* pane cwd; wrong if the
            // click lands in a non-active split whose shell sits elsewhere
-           let cwd = Shell.run(TMUX, ["display-message", "-p", "-t", "=" + session, "#{pane_current_path}"])?
+           // trailing ":" is required — display-message with a bare "=name" target
+           // silently resolves to no pane and prints nothing (tmux 3.6)
+           let cwd = Shell.run(TMUX, ["display-message", "-p", "-t", "=" + session + ":", "#{pane_current_path}"])?
                .trimmingCharacters(in: .whitespacesAndNewlines), !cwd.isEmpty {
             path = cwd + "/" + path
+        }
+        // SwiftTerm's implicit path regex keeps sentence punctuation ("spec.md." at end
+        // of a sentence) — URLs have a no-trailing-punctuation guard, bare paths don't.
+        // Strip trailing punctuation until the file actually exists.
+        while !FileManager.default.fileExists(atPath: path),
+              let last = path.last, ".,;:)]".contains(last) {
+            path.removeLast()
         }
         NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
