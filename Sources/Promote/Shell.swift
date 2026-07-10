@@ -37,8 +37,4 @@ struct Shell {
     static func tmux(_ args: String...) -> String? {
         run(TMUX, args)
     }
-
-    static func tmux(_ args: [String]) -> String? {
-        run(TMUX, args)
-    }
 }

@@ -29,13 +29,4 @@ enum Settings {
         set { d.set(newValue, forKey: "sessionOrder") }
     }
 
-    static var fontSize: Double {
-        get { d.object(forKey: fontSizeKey) as? Double ?? 13 }
-        set { d.set(newValue, forKey: fontSizeKey) }
-    }
-
-    static var agentsPanelHeight: Double {
-        get { d.object(forKey: "agentsPanelHeight") as? Double ?? 160 }
-        set { d.set(newValue, forKey: "agentsPanelHeight") }
-    }
 }

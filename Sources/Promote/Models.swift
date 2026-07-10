@@ -9,7 +9,7 @@ struct Session: Identifiable, Equatable, Hashable {
     var id: String { name }
 }
 
-enum PRState: String, CaseIterable {
+enum PRState: String {
     case draft, open, merged, closed
 
     var label: String { rawValue.capitalized }
@@ -35,7 +35,7 @@ struct SessionDetails: Equatable {
     var pr: PRInfo?
 }
 
-enum AgentStatus: String, CaseIterable {
+enum AgentStatus: String {
     case working, idle, blocked, done
 
     var title: String { rawValue.capitalized }
@@ -50,12 +50,13 @@ enum AgentStatus: String, CaseIterable {
     }
 }
 
-// A tmux pane that appears to be running an agent CLI.
+// A tmux pane that appears to be running an agent CLI, or a dev server.
 struct AgentInfo: Identifiable, Equatable, Hashable {
     let paneId: String
     let session: String
     let tool: String
     let status: AgentStatus
+    var isServer: Bool = false   // node/dev-server pane: plain green dot, not agent hex status
 
     var id: String { paneId }
 }
@@ -83,14 +84,6 @@ func colorFromHex(_ value: String) -> SwiftUI.Color? {
     guard trimmed.hasPrefix("#") else { return nil }
 
     let hex = String(trimmed.dropFirst())
-    if hex.count == 3,
-       let v = UInt16(hex, radix: 16) {
-        let r = Double((v >> 8) & 0xF) / 15
-        let g = Double((v >> 4) & 0xF) / 15
-        let b = Double(v & 0xF) / 15
-        return SwiftUI.Color(red: r, green: g, blue: b)
-    }
-
     guard hex.count == 6, let v = UInt32(hex, radix: 16) else { return nil }
     return SwiftUI.Color(
         red: Double((v >> 16) & 0xFF) / 255,
