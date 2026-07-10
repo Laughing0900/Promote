@@ -133,12 +133,12 @@ struct CheatSheetView: View {
 
     private func shortcutRow(_ row: ShortcutRow) -> some View {
         HStack(alignment: .center, spacing: 10) {
-            KeyFlow(spacing: 5) {
+            HStack(spacing: 5) {
                 ForEach(Array(row.keys.enumerated()), id: \.offset) { _, key in
                     keyCap(key)
                 }
             }
-            .frame(width: 96, alignment: .leading)
+            .frame(width: 112, alignment: .leading)
 
             Text(row.description)
                 .font(.subheadline)
@@ -146,43 +146,6 @@ struct CheatSheetView: View {
                 .truncationMode(.tail)
 
             Spacer(minLength: 0)
-        }
-    }
-
-    // Wraps keycaps onto the next line when they exceed the fixed key-column width.
-    private struct KeyFlow: Layout {
-        var spacing: CGFloat = 5
-
-        func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-            let maxWidth = proposal.width ?? .infinity
-            var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0, width: CGFloat = 0
-            for subview in subviews {
-                let size = subview.sizeThatFits(.unspecified)
-                if x > 0 && x + size.width > maxWidth {
-                    x = 0
-                    y += rowHeight + spacing
-                    rowHeight = 0
-                }
-                x += size.width + spacing
-                rowHeight = max(rowHeight, size.height)
-                width = max(width, x - spacing)
-            }
-            return CGSize(width: width, height: y + rowHeight)
-        }
-
-        func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-            var x = bounds.minX, y = bounds.minY, rowHeight: CGFloat = 0
-            for subview in subviews {
-                let size = subview.sizeThatFits(.unspecified)
-                if x > bounds.minX && x + size.width > bounds.maxX {
-                    x = bounds.minX
-                    y += rowHeight + spacing
-                    rowHeight = 0
-                }
-                subview.place(at: CGPoint(x: x, y: y), proposal: .unspecified)
-                x += size.width + spacing
-                rowHeight = max(rowHeight, size.height)
-            }
         }
     }
 

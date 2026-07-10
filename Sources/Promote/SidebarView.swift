@@ -12,10 +12,8 @@ struct SidebarView: View {
     @State private var groupingSession: String?
     @State private var newGroupName = ""
     @State private var hoveredSession: String?
-    @State private var cmdHeld = false
-    @State private var flagsMonitor: Any?
 
-    @AppStorage("agentsPanelHeight") private var agentsPanelHeight = Settings.agentsPanelHeight
+    @AppStorage("agentsPanelHeight") private var agentsPanelHeight = 160.0
     @State private var dragBaseHeight: Double?
 
     @FocusState private var renameFocused: Bool
@@ -35,8 +33,6 @@ struct SidebarView: View {
         }
         .background(Color(nsColor: .underPageBackgroundColor).ignoresSafeArea())
         .toolbar(removing: .sidebarToggle)
-        .onAppear { startMonitoringModifiers() }
-        .onDisappear { stopMonitoringModifiers() }
         .alert("New Group", isPresented: Binding(
             get: { groupingSession != nil },
             set: { if !$0 { groupingSession = nil } }
@@ -151,119 +147,117 @@ struct SidebarView: View {
         let isSelected = store.selected == session.name
         let agentStatus = summarizedAgentStatus(for: session.name)
 
-        VStack(alignment: .leading) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 3) {
-                    if editingSession == session.name {
-                        TextField("Session Name", text: $renameText)
-                            .textFieldStyle(.roundedBorder)
-                            .focused($renameFocused)
-                            .onSubmit { commitRename(old: session.name) }
-                            .onExitCommand { editingSession = nil }
-                    } else {
-                        HStack(spacing: 4) {
-                            if store.locked.contains(session.name) {
-                                Image(systemName: "lock.fill")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .help("Locked: pane can't be closed")
-                            }
-
-                            Text(session.name)
-                                .lineLimit(1)
-                                .font(.body.weight(.medium))
-                                .foregroundStyle(
-                                    hoveredSession == session.name && !isSelected
-                                        ? Color.accentColor
-                                        : Color.primary
-                                )
-
-                            if session.serving {
-                                Circle()
-                                    .fill(.green)
-                                    .frame(width: 6, height: 6)
-                                    .help("Dev server running")
-                            }
-                        }
-                    }
-
-                    // always render dir/git/pr lines (blank when absent) so every row is the same height
-                    Text(session.path.isEmpty ? " " : shortPath(session.path))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-
-                    // PR badge line; branch is in the context menu (Copy Branch Name)
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
+                if editingSession == session.name {
+                    TextField("Session Name", text: $renameText)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($renameFocused)
+                        .onSubmit { commitRename(old: session.name) }
+                        .onExitCommand { editingSession = nil }
+                } else {
                     HStack(spacing: 4) {
-                        if let pr = details.pr {
-                            Button {
-                                if let url = URL(string: pr.url) {
-                                    NSWorkspace.shared.open(url)
-                                }
-                            } label: {
-                                Text("#\(pr.number)")
-                                    .underline()
-                            }
-                            .buttonStyle(.plain)
-
-                            Text(pr.state.label)
-                                .font(.caption2.weight(.semibold))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(pr.state.color, in: Capsule())
-                                .foregroundStyle(.white)
-                        } else {
-                            Text(" ")
+                        if session.serving {
+                            Circle()
+                                .fill(colorFromHex("#01796f") ?? .green)
+                                .frame(width: 6, height: 6)
+                                .help("Dev server running")
                         }
+
+                        if store.locked.contains(session.name) {
+                            Image(systemName: "lock.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .help("Locked: pane can't be closed")
+                        }
+
+                        Text(session.name)
+                            .lineLimit(1)
+                            .font(.body.weight(.medium))
+                            .foregroundStyle(
+                                hoveredSession == session.name && !isSelected
+                                    ? Color.accentColor
+                                    : Color.primary
+                            )
                     }
+                }
+
+                // always render dir/git/pr lines (blank when absent) so every row is the same height
+                Text(session.path.isEmpty ? " " : shortPath(session.path))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .frame(height: 16, alignment: .leading)
+                    .lineLimit(1)
 
-                }
-
-                Spacer(minLength: 0)
-
-                HStack(alignment: .top, spacing: 6) {
-                    VStack(alignment: .trailing, spacing: 3) {
-                        if let agentStatus {
-                            StatusDot(status: agentStatus)
-                                .help("Agent: \(agentStatus.title)")
+                // PR badge line; branch is in the context menu (Copy Branch Name)
+                HStack(spacing: 4) {
+                    if let pr = details.pr {
+                        Button {
+                            if let url = URL(string: pr.url) {
+                                NSWorkspace.shared.open(url)
+                            }
+                        } label: {
+                            Text("#\(pr.number)")
+                                .underline()
                         }
+                        .buttonStyle(.plain)
 
-                        Spacer(minLength: 0)
-
-                        if (cmdHeld || hoveredSession == session.name),
-                           let index = hotkeyIndexBySession[session.name] {
-                            Text("\(index)")
-                                .font(.caption.monospacedDigit().bold())
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1)
-                                .background(Color.primary.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
-                        }
+                        Text(pr.state.label)
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(pr.state.color, in: Capsule())
+                            .foregroundStyle(.white)
+                    } else {
+                        Text(" ")
                     }
-                    .frame(maxHeight: .infinity, alignment: .trailing)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(height: 16, alignment: .leading)
 
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(store.color(of: session.name) ?? .clear)
-                        .frame(width: 4)
-                        .frame(maxHeight: .infinity)
+            }
+
+            Spacer(minLength: 0)
+
+            HStack(alignment: .top, spacing: 6) {
+                VStack(alignment: .trailing, spacing: 3) {
+                    if let agentStatus {
+                        StatusDot(status: agentStatus)
+                            .help("Agent: \(agentStatus.title)")
+                    }
+
+                    Spacer(minLength: 0)
+
+                    if (store.cmdHeld || hoveredSession == session.name),
+                       let index = hotkeyIndexBySession[session.name] {
+                        Text("\(index)")
+                            .font(.caption.monospacedDigit().bold())
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Color.primary.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
+                    }
                 }
+                .frame(maxHeight: .infinity, alignment: .trailing)
+
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(store.color(of: session.name) ?? .clear)
+                    .frame(width: 4)
+                    .frame(maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 3)
-            .contentShape(Rectangle())
-            .onHover { inside in
-                if inside {
-                    hoveredSession = session.name
-                } else if hoveredSession == session.name {
-                    hoveredSession = nil
-                }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 3)
+        .contentShape(Rectangle())
+        .onHover { inside in
+            if inside {
+                hoveredSession = session.name
+            } else if hoveredSession == session.name {
+                hoveredSession = nil
             }
-            .onTapGesture {
-                store.selected = session.name
-            }
+        }
+        .onTapGesture {
+            store.selected = session.name
         }
     }
 
@@ -420,16 +414,24 @@ struct SidebarView: View {
 
     private func agentRow(_ agent: AgentInfo) -> some View {
         HStack(alignment: .top, spacing: 8) {
-            StatusDot(status: agent.status, size: 14)
-                .padding(.top, 4)
+            if agent.isServer {
+                Circle()
+                    .fill(colorFromHex("#01796f") ?? .green)
+                    .frame(width: 8, height: 8)
+                    .frame(width: 14, height: 14)   // match StatusDot footprint
+                    .padding(.top, 4)
+            } else {
+                StatusDot(status: agent.status, size: 14)
+                    .padding(.top, 4)
+            }
 
             VStack(alignment: .leading, spacing: 1) {
                 // ponytail: hard 12-char slice so the top-right tool name never collides
                 Text(agent.session.count > 12 ? agent.session.prefix(12) + "…" : agent.session)
                     .lineLimit(1)
-                Text(agent.status.title)
+                Text(agent.isServer ? "Running" : agent.status.title)
                     .font(.caption)
-                    .foregroundStyle(agent.status.color)
+                    .foregroundStyle(agent.isServer ? (colorFromHex("#01796f") ?? .green) : agent.status.color)
             }
 
             Spacer(minLength: 4)
@@ -454,7 +456,7 @@ struct SidebarView: View {
     }
 
     private func summarizedAgentStatus(for sessionName: String) -> AgentStatus? {
-        let statuses = Set(store.agents(for: sessionName).map(\.status))
+        let statuses = Set(store.agents(for: sessionName).filter { !$0.isServer }.map(\.status))
         if statuses.contains(.blocked) { return .blocked }
         if statuses.contains(.working) { return .working }
         if statuses.contains(.done) { return .done }
@@ -472,22 +474,6 @@ struct SidebarView: View {
         path.split(separator: "/").suffix(2).joined(separator: "/")
     }
 
-    private func startMonitoringModifiers() {
-        cmdHeld = NSEvent.modifierFlags.contains(.command)
-        flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
-            cmdHeld = event.modifierFlags.contains(.command)
-            return event
-        }
-    }
-
-    private func stopMonitoringModifiers() {
-        if let flagsMonitor {
-            NSEvent.removeMonitor(flagsMonitor)
-            self.flagsMonitor = nil
-        }
-        cmdHeld = false
-    }
-
     // menus render template symbols; use a concrete bitmap swatch for color previews
     private func colorSwatch(_ color: NSColor) -> NSImage {
         let image = NSImage(size: NSSize(width: 14, height: 14), flipped: false) { rect in
@@ -500,8 +486,7 @@ struct SidebarView: View {
     }
 }
 
-// pixel hex dot-matrix status icon (rows 3/4/5/4/3):
-// idle = mottled grays, working = rotating loading sweep, done = tick, blocked = cross
+// pixel hex dot-matrix status icon: tick/cross/idle patterns, dotm-hex-3 loading sweep
 struct StatusDot: View {
     let status: AgentStatus
     var size: CGFloat = 16

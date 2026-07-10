@@ -5,7 +5,6 @@ import AppKit
 struct RootView: View {
     @ObservedObject var store: SessionStore
     @State private var sidebarVisibility: NavigationSplitViewVisibility = .all
-    @State private var cmdHeld = false
     @State private var flagsMonitor: Any?
     @State private var pollTick = 0
 
@@ -29,7 +28,7 @@ struct RootView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if cmdHeld && !store.showCheatSheet {
+            if store.cmdHeld && !store.showCheatSheet {
                 Text("⌘ ,  for Shortcuts")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
@@ -48,7 +47,7 @@ struct RootView: View {
             }
             // local monitor: terminal NSView owns key focus, SwiftUI modifiers don't fire
             flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
-                cmdHeld = event.modifierFlags.contains(.command)
+                store.cmdHeld = event.modifierFlags.contains(.command)
                 return event
             }
         }

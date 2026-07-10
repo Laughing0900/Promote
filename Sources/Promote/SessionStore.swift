@@ -12,6 +12,7 @@ final class SessionStore: ObservableObject {
     // set when ⌘W would kill the session (last pane); RootView shows the confirm dialog
     @Published var pendingCloseLastPane: String?
     @Published var showCheatSheet = false
+    @Published var cmdHeld = false
     @Published private(set) var agents: [AgentInfo] = []
     // bumped to force-rebuild the terminal view (fresh SwiftTerm state; clears stuck kitty keyboard flags)
     @Published private(set) var terminalEpoch = 0
@@ -32,6 +33,8 @@ final class SessionStore: ObservableObject {
 
     private let agentTools: Set<String> = ["claude", "pi", "opencode", "codex"]
     private let wrapperCommands: Set<String> = ["node", "bun", "sh"]
+    // foreground commands that look like a JS runtime/dev server (green dot, not an agent)
+    private let serverCommands = ["node", "npm", "npx", "pnpm", "yarn", "bun", "deno", "next-server", "turbo"]
     // permission prompts + AskUserQuestion picker footer (matched against lowercased prompt region)
     private let blockedPrompts: [String] = ["do you want", "allow command", "y/n", "enter to select", "esc to cancel"]
     // Only the literal busy footer (claude/cursor). Generic words ("running", "thinking")
@@ -88,7 +91,8 @@ final class SessionStore: ObservableObject {
     private func performRefreshPass() {
         // agents first: node-based agent CLIs (pi/opencode) must not count as dev servers
         var snapshotAgents = queryAgents()
-        let snapshotSessions = querySessions(agentPanes: Set(snapshotAgents.map(\.paneId)))
+        // only real agents suppress the serving flag; server panes ARE the dev servers we want to flag
+        let snapshotSessions = querySessions(agentPanes: Set(snapshotAgents.filter { !$0.isServer }.map(\.paneId)))
 
         // sort here with the fresh snapshot, not published `sessions` (main-owned, racy off-main)
         let sidebarRank = Dictionary(uniqueKeysWithValues: snapshotSessions.enumerated().map { ($0.element.name, $0.offset) })
@@ -131,6 +135,24 @@ final class SessionStore: ObservableObject {
         }
 
         let sessionNames = Set(nextSessions.map(\.name))
+
+        // drop stored metadata for sessions that no longer exist (closed/killed)
+        if groups.keys.contains(where: { !sessionNames.contains($0) }) {
+            groups = groups.filter { sessionNames.contains($0.key) }
+            saveGroups()
+        }
+        if colors.keys.contains(where: { !sessionNames.contains($0) }) {
+            colors = colors.filter { sessionNames.contains($0.key) }
+            saveColors()
+        }
+        if locked.contains(where: { !sessionNames.contains($0) }) {
+            locked = locked.filter { sessionNames.contains($0) }
+            Settings.locked = Array(locked)
+        }
+        if Settings.order.contains(where: { !sessionNames.contains($0) }) {
+            Settings.order = Settings.order.filter { sessionNames.contains($0) }
+        }
+
         if let selected, !sessionNames.contains(selected) {
             self.selected = nextSessions.first?.name
         } else if selected == nil, let first = nextSessions.first {
@@ -164,7 +186,6 @@ final class SessionStore: ObservableObject {
         // ponytail: "server" = any pane whose foreground command looks like a JS runtime/runner.
         // No port, no listen check; upgrade path is lsof -sTCP:LISTEN against pane pids.
         // Agent panes are excluded: node-based agent CLIs (pi/opencode) also report "node".
-        let serverCommands = ["node", "npm", "npx", "pnpm", "yarn", "bun", "deno", "next-server", "turbo"]
         let serving = Set(rows.filter { row in
             !agentPanes.contains(row.pane) && serverCommands.contains { row.command.hasPrefix($0) }
         }.map(\.name))
@@ -261,12 +282,13 @@ final class SessionStore: ObservableObject {
         found.reserveCapacity(rows.count)
 
         for row in rows {
-            guard let tool = resolveAgentTool(command: row.command, panePid: row.pid, children: childrenByPpid) else {
-                continue
+            if let tool = resolveAgentTool(command: row.command, panePid: row.pid, children: childrenByPpid) {
+                let status = classifyAgentStatus(pane: row.pane, title: row.title, activity: row.activity, now: now)
+                found.append(AgentInfo(paneId: row.pane, session: row.session, tool: tool, status: status))
+            } else if serverCommands.contains(where: { row.command.hasPrefix($0) }) {
+                // dev server: show in the panel with a green "running" dot (status unused, rendered green)
+                found.append(AgentInfo(paneId: row.pane, session: row.session, tool: row.command, status: .idle, isServer: true))
             }
-
-            let status = classifyAgentStatus(pane: row.pane, title: row.title, activity: row.activity, now: now)
-            found.append(AgentInfo(paneId: row.pane, session: row.session, tool: tool, status: status))
         }
 
         let livePanes = Set(found.map(\.paneId))
@@ -274,7 +296,8 @@ final class SessionStore: ObservableObject {
         paneStatusCache = paneStatusCache.filter { livePanes.contains($0.key) }
 
         // caller sorts against the fresh session snapshot; published `sessions` is main-owned
-        return found
+        // servers first so running dev servers stay visible above the (often longer) agent list
+        return found.filter(\.isServer) + found.filter { !$0.isServer }
     }
 
     private func resolveAgentTool(command: String,
@@ -550,7 +573,7 @@ final class SessionStore: ObservableObject {
         ordered.insert(moving, at: insertAt)
 
         sessions = ordered
-        saveOrder()
+        Settings.order = sessions.map(\.name)
     }
 
     // escape hatch for wedged terminal key state: rebuild the SwiftTerm view + reattach
@@ -590,10 +613,6 @@ final class SessionStore: ObservableObject {
         guard let value else { return nil }
         let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned.isEmpty ? nil : cleaned
-    }
-
-    private func saveOrder() {
-        Settings.order = sessions.map(\.name)
     }
 
     private func saveColors() {
