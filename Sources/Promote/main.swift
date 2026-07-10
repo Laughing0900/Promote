@@ -29,7 +29,7 @@ struct RootView: View {
         }
         .overlay(alignment: .bottom) {
             if store.cmdHeld && !store.showCheatSheet {
-                Text("⌘ ,  for Shortcuts")
+                Text("⌘ /  for Shortcuts")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 10)
@@ -147,7 +147,7 @@ struct PromoteApp: App {
                 Button("Keyboard Shortcuts") {
                     store.showCheatSheet.toggle()
                 }
-                .keyboardShortcut(",", modifiers: .command)
+                .keyboardShortcut("/", modifiers: .command)
             }
 
             CommandMenu("View") {

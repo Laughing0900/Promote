@@ -31,7 +31,7 @@ struct CheatSheetView: View {
             ShortcutRow(keys: ["⌘", "="], description: "Increase font size"),
             ShortcutRow(keys: ["⌘", "−"], description: "Decrease font size"),
             ShortcutRow(keys: ["⌘", "0"], description: "Reset font size"),
-            ShortcutRow(keys: ["⌘", ","], description: "Toggle this cheat sheet"),
+            ShortcutRow(keys: ["⌘", "/"], description: "Toggle this cheat sheet"),
         ]),
         ShortcutSection(title: "tmux", subtitle: "After your Prefix", rows: [
             ShortcutRow(keys: ["d"], description: "Detach from session"),

@@ -389,7 +389,7 @@ struct SidebarView: View {
                 )
 
             HStack {
-                Text("Agents")
+                Text("Activity")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -414,16 +414,8 @@ struct SidebarView: View {
 
     private func agentRow(_ agent: AgentInfo) -> some View {
         HStack(alignment: .top, spacing: 8) {
-            if agent.isServer {
-                Circle()
-                    .fill(colorFromHex("#01796f") ?? .green)
-                    .frame(width: 8, height: 8)
-                    .frame(width: 14, height: 14)   // match StatusDot footprint
-                    .padding(.top, 4)
-            } else {
-                StatusDot(status: agent.status, size: 14)
-                    .padding(.top, 4)
-            }
+            StatusDot(status: agent.status, size: 14, isServer: agent.isServer)
+                .padding(.top, 4)
 
             VStack(alignment: .leading, spacing: 1) {
                 // ponytail: hard 12-char slice so the top-right tool name never collides
@@ -490,6 +482,7 @@ struct SidebarView: View {
 struct StatusDot: View {
     let status: AgentStatus
     var size: CGFloat = 16
+    var isServer = false   // dev-server: green dotm-hex-1 orbit instead of status pattern
 
     private struct Dot {
         let key: Int      // row*10+index, for shape lookup
@@ -513,9 +506,12 @@ struct StatusDot: View {
     private static let tick: Set<Int> = [20, 30, 40, 31, 22, 12, 2]
     private static let cross: Set<Int> = [0, 2, 11, 12, 22, 31, 32, 40, 42]
     private static let idlePattern: Set<Int> = [0, 2, 20, 21, 22, 23, 24, 40, 42]
+    // dotm-hex-1 perimeter, clockwise from top-left, as StatusDot keys
+    private static let perimeter: [Int] = [0, 1, 2, 13, 24, 33, 42, 41, 40, 30, 20, 10]
+    private static let serverGreen = colorFromHex("#01796f") ?? .green
 
     var body: some View {
-        if status == .working {
+        if status == .working || isServer {
             TimelineView(.animation(minimumInterval: 1.0 / 20)) { tl in
                 matrix(time: tl.date.timeIntervalSinceReferenceDate)
             }
@@ -539,6 +535,7 @@ struct StatusDot: View {
     }
 
     private func color(for dot: Dot, time: TimeInterval) -> Color {
+        if isServer { return serverColor(for: dot, time: time) }
         let dim = Color.primary.opacity(0.12)
         switch status {
         case .idle:
@@ -563,6 +560,25 @@ struct StatusDot: View {
             let o = min(0.96, 0.08 + gateA * 0.7 + gateB * 0.7 + centerFlash * 0.42 + wake)
             return status.color.opacity(o)
         }
+    }
+
+    // port of dotm-hex-1 "Hex Orbit" (dotmatrix.zzzzshawn.cloud): two soft heads
+    // chase around the perimeter half a lap apart, interior stays quietly lit
+    private func serverColor(for dot: Dot, time: TimeInterval) -> Color {
+        guard let idx = Self.perimeter.firstIndex(of: dot.key) else {
+            return Self.serverGreen.opacity(dot.key == 22 ? 0.10 : (dot.key % 10 == 2 ? 0.20 : 0.18))
+        }
+        let pathLen = Double(Self.perimeter.count)
+        let phase = (time / 0.9375).truncatingRemainder(dividingBy: 1)  // 1500ms base / 1.6 speed
+        let headA = phase * pathLen
+        let headB = (headA + pathLen / 2).truncatingRemainder(dividingBy: pathLen)
+        let glow = { (head: Double) -> Double in
+            var dist = (head - Double(idx)).truncatingRemainder(dividingBy: pathLen)
+            if dist < 0 { dist += pathLen }
+            let t = min(1.0, max(0.0, dist / 5.0))
+            return 0.10 + (1 - t * t * (3 - 2 * t)) * 0.86  // 1 - smoothstep, trail span 5
+        }
+        return Self.serverGreen.opacity(min(0.96, max(glow(headA), glow(headB) * 0.74)))
     }
 }
 
