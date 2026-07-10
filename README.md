@@ -28,7 +28,8 @@ swift run Promote
 
 - Sessions appear in the sidebar automatically (refreshes every 2s); select one to attach.
 - Right-click a session: Rename, Copy Name, Reveal in Finder, Color, Group, Kill.
-- Agents panel appears at the bottom when any pane runs an agent CLI; click a row to jump to that session.
+- Activity panel appears at the bottom when any pane runs an agent CLI; click a row to jump to that session.
+- Dev servers (node, npm, bun, yarn, pnpm, deno, turbo, …) show as a teal **Running** row in the same panel, and a teal dot appears left of the session name.
 
 ## Keyboard shortcuts
 
@@ -37,9 +38,11 @@ swift run Promote
 | ⌘N | New session |
 | ⌘1–9 | Jump to session (sidebar order) |
 | ⌘\ | Split pane right |
+| ⌘⇧\ | Split pane down |
 | ⌘W | Close current pane |
+| ⌘⇧R | Reattach terminal (fixes stuck keys) |
 | ⌘+ / ⌘− / ⌘0 | Terminal font size bigger / smaller / reset |
-| ⌘, | Keyboard shortcuts cheat sheet |
+| ⌘/ | Keyboard shortcuts cheat sheet |
 
 ## Agent status colors
 
