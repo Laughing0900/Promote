@@ -302,6 +302,13 @@ struct SidebarView: View {
         }
         .disabled(session.path.isEmpty)
 
+        Button("Open PR") {
+            if let pr = store.details(for: session.name).pr, let url = URL(string: pr.url) {
+                NSWorkspace.shared.open(url)
+            }
+        }
+        .disabled(store.details(for: session.name).pr == nil)
+
         Divider()
 
         Menu("Color") {
