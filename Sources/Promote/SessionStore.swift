@@ -88,6 +88,19 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    // manual refresh (titlebar button): drop the read caches so PR, branch, and agent
+    // status reload from source now instead of serving values cached from the last pass.
+    // The 2s auto-refresh stays on refresh() so it keeps honoring the caches (no gh spam).
+    func forceRefresh() {
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            self.prCache.removeAll()
+            self.branchCache.removeAll()
+            self.paneStatusCache.removeAll()
+        }
+        refresh()
+    }
+
     private func performRefreshPass() {
         // agents first: node-based agent CLIs (pi/opencode) must not count as dev servers
         var snapshotAgents = queryAgents()
