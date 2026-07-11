@@ -136,21 +136,26 @@ final class SessionStore: ObservableObject {
 
         let sessionNames = Set(nextSessions.map(\.name))
 
-        // drop stored metadata for sessions that no longer exist (closed/killed)
-        if groups.keys.contains(where: { !sessionNames.contains($0) }) {
-            groups = groups.filter { sessionNames.contains($0.key) }
-            saveGroups()
-        }
-        if colors.keys.contains(where: { !sessionNames.contains($0) }) {
-            colors = colors.filter { sessionNames.contains($0.key) }
-            saveColors()
-        }
-        if locked.contains(where: { !sessionNames.contains($0) }) {
-            locked = locked.filter { sessionNames.contains($0) }
-            Settings.locked = Array(locked)
-        }
-        if Settings.order.contains(where: { !sessionNames.contains($0) }) {
-            Settings.order = Settings.order.filter { sessionNames.contains($0) }
+        // drop stored metadata for sessions that no longer exist (closed/killed).
+        // skip when the list is empty: tmux server exits with its last session, so an
+        // empty list means the server is down (reboot) or the query failed — pruning
+        // then would wipe every group/color/lock/order entry.
+        if !nextSessions.isEmpty {
+            if groups.keys.contains(where: { !sessionNames.contains($0) }) {
+                groups = groups.filter { sessionNames.contains($0.key) }
+                saveGroups()
+            }
+            if colors.keys.contains(where: { !sessionNames.contains($0) }) {
+                colors = colors.filter { sessionNames.contains($0.key) }
+                saveColors()
+            }
+            if locked.contains(where: { !sessionNames.contains($0) }) {
+                locked = locked.filter { sessionNames.contains($0) }
+                Settings.locked = Array(locked)
+            }
+            if Settings.order.contains(where: { !sessionNames.contains($0) }) {
+                Settings.order = Settings.order.filter { sessionNames.contains($0) }
+            }
         }
 
         if let selected, !sessionNames.contains(selected) {
