@@ -174,9 +174,12 @@ struct PromoteApp: App {
                 Button("Split Pane Down") { store.splitPaneDown() }
                     .keyboardShortcut("\\", modifiers: [.command, .shift])
 
+                // force a full reload: drops PR/branch/agent caches so everything re-queries now
+                Button("Force Refresh") { store.forceRefresh() }
+                    .keyboardShortcut("r", modifiers: [.command, .shift])
+
                 // escape hatch for wedged key handling (stuck kitty keyboard flags in SwiftTerm)
                 Button("Reattach Terminal") { store.reattachTerminal() }
-                    .keyboardShortcut("r", modifiers: [.command, .shift])
 
                 Divider()
 

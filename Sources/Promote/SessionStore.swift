@@ -88,9 +88,9 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    // manual refresh (titlebar button): drop the read caches so PR, branch, and agent
-    // status reload from source now instead of serving values cached from the last pass.
-    // The 2s auto-refresh stays on refresh() so it keeps honoring the caches (no gh spam).
+    // manual refresh (⇧⌘R): drop the read caches so PR, branch, and agent status reload
+    // from source now instead of serving values cached from the last pass. The 2s auto-refresh
+    // stays on refresh() so it keeps honoring the caches (no gh spam).
     func forceRefresh() {
         workerQueue.async { [weak self] in
             guard let self else { return }

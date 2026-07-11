@@ -29,11 +29,33 @@ swift run Promote
 ## Usage
 
 - Sessions appear in the sidebar automatically (refreshes every 2s); select one to attach.
-- Right-click a session: Rename, Copy Name, Reveal in Finder, Color, Group, Kill.
+- Each row shows branch, PR status, and agent/service state — see [Sidebar session display](#sidebar-session-display) below.
 - Activity panel appears at the bottom when any pane runs an agent CLI; click a row to jump to that session.
 - Dev servers (node, npm, bun, yarn, pnpm, deno, turbo, …) show as a teal **Running** row in the same panel, and a teal dot appears left of the session name.
 
 ![Usage](assets/manual.jpeg)
+
+## Sidebar session display
+
+Each session row shows, top to bottom: the session **name** (preceded by a teal dot when a dev server is running, and a lock icon when locked), the **repo path**, and a **PR badge** linking to the pull request for the current branch. A cluster of status dots on the right reflects the agent(s) running in that session; hold ⌘ (or hover) to reveal the session's jump-number badge. The current **branch** is available via right-click → *Copy Branch Name*.
+
+![PR status badges](assets/pr-status.jpg)
+
+PR badges follow `gh pr view` for the session's branch:
+
+| Badge | State |
+|-------|-------|
+| 🔵 Open | PR is open |
+| 🔴 Closed | Closed without merging |
+| 🟢 Merged | PR was merged |
+| ⚪ Draft | Open draft PR |
+
+Right-click a session for the full menu:
+
+- **Rename**, **Copy Name**, **Copy Path**, **Copy Branch Name**
+- **Reveal in Finder**, **Open in VS Code**
+- **Color** (palette / custom / none), **Group** (assign / new group)
+- **Lock** (protect from ⌘W and Kill), **Kill Session**
 
 ## Keyboard shortcuts
 
@@ -47,7 +69,7 @@ swift run Promote
 | ⌘\ | Split pane right |
 | ⌘⇧\ | Split pane down |
 | ⌘W | Close current pane |
-| ⌘⇧R | Reattach terminal (fixes stuck keys) |
+| ⌘⇧R | Force refresh (reload PR / branch / agent status) |
 | ⌘+ / ⌘− / ⌘0 | Terminal font size bigger / smaller / reset |
 | ⌘/ | Keyboard shortcuts cheat sheet |
 
