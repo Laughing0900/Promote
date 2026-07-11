@@ -33,7 +33,7 @@ struct TitlebarButtons: View {
                 store.newSession()
             }
             TitlebarIcon(systemName: "arrow.clockwise", help: "Refresh") {
-                store.refresh()
+                store.forceRefresh()
             }
             TitlebarIcon(systemName: "sidebar.left", help: "Toggle Sidebar") {
                 NSApp.sendAction(#selector(NSSplitViewController.toggleSidebar(_:)), to: nil, from: nil)
