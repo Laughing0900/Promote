@@ -2,8 +2,6 @@
 
 A macOS agent multiplexer built on tmux. Promote lists your tmux sessions in a sidebar with git branch and PR status, embeds a terminal attached to the selected session, and tracks AI coding agents (claude, pi, cursor, opencode, codex) running in any pane — showing whether each one is working, waiting for input, or done.
 
-![Promote fullscreen](assets/fullscreen.jpg)
-
 ## Requirements
 
 - macOS 14+
