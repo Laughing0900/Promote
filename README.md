@@ -26,18 +26,38 @@ swift run Promote
 
 ## Usage
 
-- Sessions appear in the sidebar automatically (refreshes every 2s); select one to attach.
 - Each row shows branch, PR status, and agent/service state — see [Sidebar session display](#sidebar-session-display) below.
 - Activity panel appears at the bottom when any pane runs an agent CLI; click a row to jump to that session.
 - Dev servers (node, npm, bun, yarn, pnpm, deno, turbo, …) show as a teal **Running** row in the same panel, and a teal dot appears left of the session name.
 
-![Usage](assets/manual.jpeg)
+## Working with tmux sessions
+
+Promote sits on top of your normal tmux — nothing is hidden or replaced:
+
+- **Your existing sessions just appear.** Anything you start from a terminal (`tmux new -s foo`) shows up in the sidebar within a couple of seconds, and stays in sync as sessions come and go.
+- **Nothing stops when you leave.** Selecting a session attaches to it; switching away or quitting the app leaves it running. You can also attach to the same session from a regular terminal at the same time.
+- **Manage sessions without the command line.** Create (⌘N), rename, split panes, and kill sessions straight from the app — new sessions and splits open in the current directory.
+- **Empty sidebar?** tmux isn't running any sessions. Hit ⌘N to start one. Your colors, groups, and ordering are remembered and come back with the sessions.
 
 ## Sidebar session display
 
 Each session row shows, top to bottom: the session **name** (preceded by a teal dot when a dev server is running, and a lock icon when locked), the **repo path**, and a **PR badge** linking to the pull request for the current branch. A cluster of status dots on the right reflects the agent(s) running in that session; hold ⌘ (or hover) to reveal the session's jump-number badge. The current **branch** is available via right-click → *Copy Branch Name*.
 
-![PR status badges](assets/pr-status.jpg)
+```text
+┌────────────────────────────────┐
+│ 2                          ✳   │   ← agent status dots
+│ Pawn/Promote                   │   ← repo path
+│ #2 ( Open )               [1]  │   ← PR badge · jump number
+├────────────────────────────────┤
+│▌2                          ✳   │
+│▌Pawn/Promote                   │   ← selected session
+│▌#2 ( Closed )             [1]  │
+├────────────────────────────────┤
+│ 2                          ✳   │
+│ Pawn/Promote                   │
+│ #2 ( Merged )             [1]  │
+└────────────────────────────────┘
+```
 
 PR badges follow `gh pr view` for the session's branch:
 
@@ -56,8 +76,6 @@ Right-click a session for the full menu:
 - **Lock** (protect from ⌘W and Kill), **Kill Session**
 
 ## Keyboard shortcuts
-
-![Keyboard shortcuts](assets/shortcut-keys.jpg)
 
 | Shortcut | Action |
 |----------|--------|
