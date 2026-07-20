@@ -16,10 +16,11 @@ enum PRState: String {
 
     var color: SwiftUI.Color {
         switch self {
-        case .draft: return .gray
-        case .open: return .blue
-        case .merged: return colorFromHex("#05472A") ?? .green
-        case .closed: return colorFromHex("#DA2C43") ?? .red
+        // GitHub PR status colors
+        case .draft: return colorFromHex("#6E7781") ?? .gray
+        case .open: return colorFromHex("#17B169") ?? .green
+        case .merged: return colorFromHex("#8250DF") ?? .purple
+        case .closed: return colorFromHex("#CF222E") ?? .red
         }
     }
 }

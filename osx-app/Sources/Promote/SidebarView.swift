@@ -2,6 +2,22 @@ import SwiftUI
 import UniformTypeIdentifiers
 import AppKit
 
+// dividers/headers/sessions flattened into one ForEach so a single onInsert covers
+// every gap — including after each group's last row, which per-group ForEach can't
+private enum SidebarRow: Identifiable {
+    case divider(prevGroup: String, nextGroup: String)
+    case header(String)
+    case session(Session, group: String)
+
+    var id: String {
+        switch self {
+        case .divider(_, let next): return "d:\(next)"
+        case .header(let group): return "h:\(group)"
+        case .session(let s, _): return "s:\(s.name)"
+        }
+    }
+}
+
 struct SidebarView: View {
     @ObservedObject var store: SessionStore
 
@@ -71,6 +87,14 @@ struct SidebarView: View {
     private var sessionList: some View {
         // grouped filters/sorts every call; compute once per render
         let grouped = store.grouped
+
+        var rows: [SidebarRow] = []
+        for (idx, entry) in grouped.enumerated() {
+            if idx > 0 { rows.append(.divider(prevGroup: grouped[idx - 1].0, nextGroup: entry.0)) }
+            if entry.0 != store.defaultGroup { rows.append(.header(entry.0)) }
+            for session in entry.1 { rows.append(.session(session, group: entry.0)) }
+        }
+
         // min row height 1: rows size to content; no forced 24px spacer rows
         return List(selection: $store.selected) {
             // zero-height dummy row soaks up the List's first-row top inset,
@@ -80,36 +104,28 @@ struct SidebarView: View {
                 .listRowInsets(EdgeInsets())
                 .selectionDisabled()
 
-            ForEach(Array(grouped.enumerated()), id: \.element.0) { idx, groupEntry in
-                let groupName = groupEntry.0
-                let isDefaultGroup = groupName == store.defaultGroup
-                let sessions = groupEntry.1
-
-                // divider as its own non-selectable row so hover/selection pills never cover it
-                if idx > 0 {
+            ForEach(rows) { row in
+                switch row {
+                case .divider:
+                    // divider as its own non-selectable row so hover/selection pills never cover it
                     Divider()
                         .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 2, trailing: 8))
                         .selectionDisabled()
-                }
-
-                groupHeader(groupName, isDefault: isDefaultGroup)
-
-                ForEach(sessions) { session in
+                case .header(let name):
+                    groupHeader(name, isDefault: false)
+                case .session(let session, _):
                     sessionRow(session)
                         .tag(session.name)
                         .contextMenu { sessionMenu(session) }
                         .onDrag { NSItemProvider(object: session.name as NSString) }
                 }
-                .onInsert(of: [.utf8PlainText, .plainText]) { index, providers in
-                    providers.first?.loadObject(ofClass: NSString.self) { object, _ in
-                        guard let name = object as? String else { return }
-                        DispatchQueue.main.async {
-                            store.handleDrop(
-                                name: name,
-                                group: isDefaultGroup ? nil : groupName,
-                                at: index
-                            )
-                        }
+            }
+            .onInsert(of: [.utf8PlainText, .plainText]) { index, providers in
+                let target = dropTarget(rows: rows, insertIndex: index)
+                providers.first?.loadObject(ofClass: NSString.self) { object, _ in
+                    guard let name = object as? String else { return }
+                    DispatchQueue.main.async {
+                        store.handleDrop(name: name, group: target.group, at: target.at)
                     }
                 }
             }
@@ -125,6 +141,35 @@ struct SidebarView: View {
         .contentMargins(.top, 0, for: .scrollContent)
         // contentMargins clamps at 0; negative frame padding is what actually eats the List's top inset
         .padding(.top, -34)
+    }
+
+    // map a flat insert index to (group, position-in-group) by looking at the row above the gap
+    private func dropTarget(rows: [SidebarRow], insertIndex: Int) -> (group: String?, at: Int) {
+        func normalized(_ g: String) -> String? { g == store.defaultGroup ? nil : g }
+
+        guard let firstRow = rows.first else { return (nil, 0) }
+        guard insertIndex > 0 else {
+            // gap above everything → top of first group
+            switch firstRow {
+            case .divider(_, let g), .header(let g), .session(_, let g):
+                return (normalized(g), 0)
+            }
+        }
+
+        switch rows[min(insertIndex, rows.count) - 1] {
+        case .session(_, let g):
+            let pos = rows.prefix(insertIndex).filter {
+                if case .session(_, let sg) = $0 { return sg == g }
+                return false
+            }.count
+            return (normalized(g), pos)
+        case .header(let g):
+            return (normalized(g), 0)
+        case .divider(_, let next):
+            // gap below the divider = "top of the group underneath";
+            // gap above it resolves via the session case → end of the group above
+            return (normalized(next), 0)
+        }
     }
 
     @ViewBuilder
@@ -197,16 +242,15 @@ struct SidebarView: View {
                             }
                         } label: {
                             Text("#\(pr.number)")
-                                .underline()
+                                .overlay(alignment: .bottom) {
+                                    Capsule()
+                                        .fill(pr.state.color)
+                                        .frame(height: 2)
+                                        .offset(y: 2)
+                                }
                         }
                         .buttonStyle(.plain)
-
-                        Text(pr.state.label)
-                            .font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(pr.state.color, in: Capsule())
-                            .foregroundStyle(.white)
+                        .help(pr.state.label)
                     } else {
                         Text(" ")
                     }
