@@ -241,17 +241,25 @@ struct SidebarView: View {
                                 NSWorkspace.shared.open(url)
                             }
                         } label: {
-                            Text("#\(pr.number)")
-                                .overlay(alignment: .bottom) {
+                            Text(verbatim: "#\(pr.number)")
+                                .background(alignment: .bottom) {
                                     Capsule()
                                         .fill(pr.state.color)
                                         .frame(height: 2)
-                                        .offset(y: 2)
+                                        .offset(y: -1)
                                 }
                         }
                         .buttonStyle(.plain)
                         .help(pr.state.label)
-                    } else {
+                    }
+
+                    if let diff = details.diff {
+                        (Text(verbatim: "+\(diff.added)").foregroundStyle(colorFromHex("#17B169") ?? .green)
+                            + Text(verbatim: "-\(diff.deleted)").foregroundStyle(colorFromHex("#CF222E") ?? .red))
+                            .help("Changed files: \(diff.added) added/modified, \(diff.deleted) deleted")
+                    }
+
+                    if details.pr == nil && details.diff == nil {
                         Text(" ")
                     }
                 }
@@ -305,6 +313,13 @@ struct SidebarView: View {
         }
     }
 
+    private func openInApp(_ session: Session, bundleId: String) {
+        let dir = URL(fileURLWithPath: session.path)
+        if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) {
+            NSWorkspace.shared.open([dir], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
+        }
+    }
+
     @ViewBuilder
     private func sessionMenu(_ session: Session) -> some View {
         Button("Rename") {
@@ -314,37 +329,41 @@ struct SidebarView: View {
             DispatchQueue.main.async { renameFocused = true }
         }
 
-        Button("Copy Name") {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(session.name, forType: .string)
-        }
-
-        Button("Copy Path") {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(session.path, forType: .string)
-        }
-        .disabled(session.path.isEmpty)
-
-        Button("Copy Branch Name") {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(store.details(for: session.name).branch ?? "", forType: .string)
-        }
-        .disabled(store.details(for: session.name).branch == nil)
-
-        Divider()
-
-        Button("Reveal in Finder") {
-            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: session.path)])
-        }
-        .disabled(session.path.isEmpty)
-
-        Button("Open in VS Code") {
-            let dir = URL(fileURLWithPath: session.path)
-            if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.microsoft.VSCode") {
-                NSWorkspace.shared.open([dir], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
+        Menu("Copy") {
+            Button("Name") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(session.name, forType: .string)
             }
+
+            Button("Path") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(session.path, forType: .string)
+            }
+            .disabled(session.path.isEmpty)
+
+            Button("Branch Name") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(store.details(for: session.name).branch ?? "", forType: .string)
+            }
+            .disabled(store.details(for: session.name).branch == nil)
         }
-        .disabled(session.path.isEmpty)
+
+        Menu("Edit") {
+            Button("VS Code") {
+                openInApp(session, bundleId: "com.microsoft.VSCode")
+            }
+            .disabled(session.path.isEmpty)
+
+            Button("Cursor") {
+                openInApp(session, bundleId: "com.todesktop.230313mzl4w4u92")
+            }
+            .disabled(session.path.isEmpty)
+
+            Button("Xcode") {
+                openInApp(session, bundleId: "com.apple.dt.Xcode")
+            }
+            .disabled(session.path.isEmpty)
+        }
 
         Button("Open PR") {
             if let pr = store.details(for: session.name).pr, let url = URL(string: pr.url) {
@@ -352,6 +371,13 @@ struct SidebarView: View {
             }
         }
         .disabled(store.details(for: session.name).pr == nil)
+
+        Divider()
+
+        Button("Reveal in Finder") {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: session.path)])
+        }
+        .disabled(session.path.isEmpty)
 
         Divider()
 

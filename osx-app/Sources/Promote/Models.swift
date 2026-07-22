@@ -31,9 +31,15 @@ struct PRInfo: Equatable, Hashable {
     let url: String
 }
 
+struct GitDiff: Equatable {
+    let added: Int    // added/modified/untracked files
+    let deleted: Int  // deleted files
+}
+
 struct SessionDetails: Equatable {
     var branch: String?
     var pr: PRInfo?
+    var diff: GitDiff?
 }
 
 enum AgentStatus: String {

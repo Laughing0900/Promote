@@ -27,6 +27,7 @@ final class SessionStore: ObservableObject {
     // workerQueue-only caches
     private var prCache: [String: (Date, PRInfo?)] = [:]
     private var branchCache: [String: (Date, String?)] = [:]
+    private var diffCache: [String: (Date, GitDiff?)] = [:]
     // ponytail: capture-pane is the hot subprocess; reuse each pane's verdict for a few seconds
     private var paneStatusCache: [String: (at: Double, status: AgentStatus)] = [:]
     private var agentWorked: Set<String> = []
@@ -35,6 +36,8 @@ final class SessionStore: ObservableObject {
     private let wrapperCommands: Set<String> = ["node", "bun", "sh"]
     // foreground commands that look like a JS runtime/dev server (green dot, not an agent)
     private let serverCommands = ["node", "npm", "npx", "pnpm", "yarn", "bun", "deno", "next-server", "turbo"]
+    // foreground shell that isn't the interactive login shell => running script
+    private let scriptShells: Set<String> = ["sh", "bash", "dash"]
     // permission prompts + AskUserQuestion picker footer (matched against lowercased prompt region)
     private let blockedPrompts: [String] = ["do you want", "allow command", "y/n", "enter to select", "esc to cancel"]
     // Only the literal busy footer (claude/cursor). Generic words ("running", "thinking")
@@ -96,6 +99,7 @@ final class SessionStore: ObservableObject {
             guard let self else { return }
             self.prCache.removeAll()
             self.branchCache.removeAll()
+            self.diffCache.removeAll()
             self.paneStatusCache.removeAll()
         }
         refresh()
@@ -205,7 +209,8 @@ final class SessionStore: ObservableObject {
         // No port, no listen check; upgrade path is lsof -sTCP:LISTEN against pane pids.
         // Agent panes are excluded: node-based agent CLIs (pi/opencode) also report "node".
         let serving = Set(rows.filter { row in
-            !agentPanes.contains(row.pane) && serverCommands.contains { row.command.hasPrefix($0) }
+            !agentPanes.contains(row.pane) &&
+                (serverCommands.contains { row.command.hasPrefix($0) } || scriptShells.contains(row.command))
         }.map(\.name))
 
         var seen = Set<String>()
@@ -233,7 +238,27 @@ final class SessionStore: ObservableObject {
         var next = SessionDetails()
         next.branch = queryBranch(for: session.path)
         next.pr = queryPRInfo(for: session.path)
+        next.diff = queryDiff(for: session.path)
         return next
+    }
+
+    private func queryDiff(for path: String) -> GitDiff? {
+        if let (cachedAt, cachedValue) = diffCache[path], Date().timeIntervalSince(cachedAt) < 10 {
+            return cachedValue
+        }
+
+        var resolved: GitDiff?
+        if let out = Shell.run(GIT, ["-C", path, "status", "--porcelain"]) {
+            var added = 0, deleted = 0
+            for line in out.split(whereSeparator: \.isNewline) {
+                let status = line.prefix(2)
+                if status.contains("D") { deleted += 1 } else { added += 1 }
+            }
+            resolved = (added == 0 && deleted == 0) ? nil : GitDiff(added: added, deleted: deleted)
+        }
+
+        diffCache[path] = (Date(), resolved)
+        return resolved
     }
 
     private func queryBranch(for path: String) -> String? {
@@ -306,6 +331,10 @@ final class SessionStore: ObservableObject {
             } else if serverCommands.contains(where: { row.command.hasPrefix($0) }) {
                 // dev server: show in the panel with a green "running" dot (status unused, rendered green)
                 found.append(AgentInfo(paneId: row.pane, session: row.session, tool: row.command, status: .idle, isServer: true))
+            } else if scriptShells.contains(row.command) {
+                // pane's foreground process is a non-login shell => a script is running.
+                // ponytail: can't detect `zsh script.sh` — indistinguishable from the interactive zsh prompt
+                found.append(AgentInfo(paneId: row.pane, session: row.session, tool: "script (\(row.command))", status: .idle, isServer: true))
             }
         }
 
