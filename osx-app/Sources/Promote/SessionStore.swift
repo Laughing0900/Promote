@@ -599,6 +599,26 @@ final class SessionStore: ObservableObject {
         terminalEpoch += 1
     }
 
+    // menu bar: show installed tmux version, warn on known server-crashing releases
+    func checkTmuxVersion() {
+        workerQueue.async {
+            let version = Shell.run(TMUX, ["-V"]) ?? "tmux not found at \(TMUX)"
+            DispatchQueue.main.async {
+                let alert = NSAlert()
+                alert.messageText = version
+                // ponytail: hardcoded known-bad list, no brew/network query; extend if another bad release ships
+                if version.contains("3.6") {
+                    alert.informativeText = """
+                    tmux 3.6–3.6b crashes in copy-mode on Apple Silicon (tmux/tmux#4777), \
+                    killing every session — the terminal goes dark.
+                    Fix: brew upgrade tmux, then tmux kill-server (drops sessions) and relaunch.
+                    """
+                }
+                alert.runModal()
+            }
+        }
+    }
+
     func jumpToHotkeyIndex(_ index: Int) {
         let ordered = hotkeyOrderedSessions
         guard index > 0, index <= ordered.count else { return }

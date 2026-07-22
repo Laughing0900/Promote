@@ -181,6 +181,8 @@ struct PromoteApp: App {
                 // escape hatch for wedged key handling (stuck kitty keyboard flags in SwiftTerm)
                 Button("Reattach Terminal") { store.reattachTerminal() }
 
+                Button("Check tmux Version") { store.checkTmuxVersion() }
+
                 Divider()
 
                 ForEach(1..<10, id: \.self) { index in
