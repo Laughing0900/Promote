@@ -408,24 +408,26 @@ struct SidebarView: View {
 
         Divider()
 
-        Button("Copy \(lastCopyKind)") { doCopy(lastCopyKind, session) }
-            .disabled(copyValue(lastCopyKind, session) == nil)
-
-        Menu("Copy") {
+        Menu {
             ForEach(Self.copyKinds, id: \.self) { kind in
                 Button(kind) { doCopy(kind, session) }
                     .disabled(copyValue(kind, session) == nil)
             }
+        } label: {
+            Text("Copy \(lastCopyKind)")
+        } primaryAction: {
+            doCopy(lastCopyKind, session)
         }
 
-        Button("Edit in \(lastEditApp)") { doEdit(lastEditApp, session) }
-            .disabled(session.path.isEmpty)
-
-        Menu("Edit") {
+        Menu {
             ForEach(Self.editApps, id: \.name) { app in
                 Button(app.name) { doEdit(app.name, session) }
                     .disabled(session.path.isEmpty)
             }
+        } label: {
+            Text("Edit in \(lastEditApp)")
+        } primaryAction: {
+            doEdit(lastEditApp, session)
         }
 
             Button("Reveal in Finder") {
