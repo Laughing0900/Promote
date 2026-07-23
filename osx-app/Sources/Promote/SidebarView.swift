@@ -30,6 +30,8 @@ struct SidebarView: View {
     @State private var hoveredSession: String?
 
     @AppStorage("agentsPanelHeight") private var agentsPanelHeight = 160.0
+    @AppStorage("lastCopyKind") private var lastCopyKind = "Path"
+    @AppStorage("lastEditApp") private var lastEditApp = "VS Code"
     @State private var dragBaseHeight: Double?
 
     @FocusState private var renameFocused: Bool
@@ -256,7 +258,7 @@ struct SidebarView: View {
                     if let diff = details.diff {
                         (Text(verbatim: "+\(diff.added)").foregroundStyle(colorFromHex("#17B169") ?? .green)
                             + Text(verbatim: "-\(diff.deleted)").foregroundStyle(colorFromHex("#CF222E") ?? .red))
-                            .help("Changed files: \(diff.added) added/modified, \(diff.deleted) deleted")
+                            .help("Changed lines: \(diff.added) added, \(diff.deleted) deleted")
                     }
 
                     if details.pr == nil && details.diff == nil {
@@ -313,6 +315,35 @@ struct SidebarView: View {
         }
     }
 
+    private static let copyKinds = ["Name", "Path", "Branch"]
+    private static let editApps: [(name: String, bundleId: String)] = [
+        ("VS Code", "com.microsoft.VSCode"),
+        ("Cursor", "com.todesktop.230313mzl4w4u92"),
+        ("Xcode", "com.apple.dt.Xcode"),
+    ]
+
+    private func copyValue(_ kind: String, _ session: Session) -> String? {
+        switch kind {
+        case "Name": return session.name
+        case "Path": return session.path.isEmpty ? nil : session.path
+        case "Branch": return store.details(for: session.name).branch
+        default: return nil
+        }
+    }
+
+    private func doCopy(_ kind: String, _ session: Session) {
+        guard let value = copyValue(kind, session) else { return }
+        lastCopyKind = kind
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+    }
+
+    private func doEdit(_ appName: String, _ session: Session) {
+        guard let app = Self.editApps.first(where: { $0.name == appName }) else { return }
+        lastEditApp = appName
+        openInApp(session, bundleId: app.bundleId)
+    }
+
     private func openInApp(_ session: Session, bundleId: String) {
         let dir = URL(fileURLWithPath: session.path)
         if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) {
@@ -328,60 +359,32 @@ struct SidebarView: View {
             // TextField isn't in the hierarchy yet this tick; focus next runloop pass
             DispatchQueue.main.async { renameFocused = true }
         }
-
-        Menu("Copy") {
-            Button("Name") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(session.name, forType: .string)
+       
+        Menu("Group") {
+            Button("Default (no group)") {
+                store.setGroup(session.name, to: nil)
             }
 
-            Button("Path") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(session.path, forType: .string)
+            ForEach(store.groupNames, id: \.self) { group in
+                Button(group) {
+                    store.setGroup(session.name, to: group)
+                }
             }
-            .disabled(session.path.isEmpty)
 
-            Button("Branch Name") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(store.details(for: session.name).branch ?? "", forType: .string)
-            }
-            .disabled(store.details(for: session.name).branch == nil)
-        }
+            Divider()
 
-        Menu("Edit") {
-            Button("VS Code") {
-                openInApp(session, bundleId: "com.microsoft.VSCode")
-            }
-            .disabled(session.path.isEmpty)
-
-            Button("Cursor") {
-                openInApp(session, bundleId: "com.todesktop.230313mzl4w4u92")
-            }
-            .disabled(session.path.isEmpty)
-
-            Button("Xcode") {
-                openInApp(session, bundleId: "com.apple.dt.Xcode")
-            }
-            .disabled(session.path.isEmpty)
-        }
-
-        Button("Open PR") {
-            if let pr = store.details(for: session.name).pr, let url = URL(string: pr.url) {
-                NSWorkspace.shared.open(url)
+            Button("New Group\u{2026}") {
+                groupingSession = session.name
+                newGroupName = ""
             }
         }
-        .disabled(store.details(for: session.name).pr == nil)
-
-        Divider()
-
-        Button("Reveal in Finder") {
-            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: session.path)])
-        }
-        .disabled(session.path.isEmpty)
-
-        Divider()
-
         Menu("Color") {
+            Button("None") {
+                store.setColor(session.name, hex: nil)
+            }
+
+            Divider()
+
             ForEach(palette) { entry in
                 Button {
                     store.setColor(session.name, hex: entry.hex)
@@ -401,30 +404,42 @@ struct SidebarView: View {
                     store.setColor(session.name, hex: hexString(color))
                 }
             }
+        }
 
-            Button("None") {
-                store.setColor(session.name, hex: nil)
+        Divider()
+
+        Button("Copy \(lastCopyKind)") { doCopy(lastCopyKind, session) }
+            .disabled(copyValue(lastCopyKind, session) == nil)
+
+        Menu("Copy") {
+            ForEach(Self.copyKinds, id: \.self) { kind in
+                Button(kind) { doCopy(kind, session) }
+                    .disabled(copyValue(kind, session) == nil)
             }
         }
 
-        Menu("Group") {
-            Button("Default (no group)") {
-                store.setGroup(session.name, to: nil)
-            }
+        Button("Edit in \(lastEditApp)") { doEdit(lastEditApp, session) }
+            .disabled(session.path.isEmpty)
 
-            ForEach(store.groupNames, id: \.self) { group in
-                Button(group) {
-                    store.setGroup(session.name, to: group)
-                }
-            }
-
-            Divider()
-
-            Button("New Group\u{2026}") {
-                groupingSession = session.name
-                newGroupName = ""
+        Menu("Edit") {
+            ForEach(Self.editApps, id: \.name) { app in
+                Button(app.name) { doEdit(app.name, session) }
+                    .disabled(session.path.isEmpty)
             }
         }
+
+            Button("Reveal in Finder") {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: session.path)])
+        }
+        .disabled(session.path.isEmpty)
+
+
+        Button("Open PR") {
+            if let pr = store.details(for: session.name).pr, let url = URL(string: pr.url) {
+                NSWorkspace.shared.open(url)
+            }
+        }
+        .disabled(store.details(for: session.name).pr == nil)
 
         Divider()
 

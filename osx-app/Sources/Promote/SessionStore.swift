@@ -247,12 +247,17 @@ final class SessionStore: ObservableObject {
             return cachedValue
         }
 
+        // ponytail: numstat vs HEAD covers staged+unstaged lines; untracked files not counted.
+        // Count them via ls-files --others + wc if it matters.
         var resolved: GitDiff?
-        if let out = Shell.run(GIT, ["-C", path, "status", "--porcelain"]) {
+        if let out = Shell.run(GIT, ["-C", path, "diff", "--numstat", "HEAD"]) {
             var added = 0, deleted = 0
             for line in out.split(whereSeparator: \.isNewline) {
-                let status = line.prefix(2)
-                if status.contains("D") { deleted += 1 } else { added += 1 }
+                let cols = line.split(separator: "\t")
+                // binary files report "-\t-"; skip
+                guard cols.count >= 2, let a = Int(cols[0]), let d = Int(cols[1]) else { continue }
+                added += a
+                deleted += d
             }
             resolved = (added == 0 && deleted == 0) ? nil : GitDiff(added: added, deleted: deleted)
         }
