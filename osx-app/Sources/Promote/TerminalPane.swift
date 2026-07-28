@@ -11,6 +11,9 @@ final class TerminalLinkRouter: TerminalViewDelegate {
     var session: String?
 
     func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
+        // .hover fires on mouseUp, which is also how a drag-selection ends —
+        // releasing a selection over a link would otherwise open it.
+        if source.selectionActive { return }
         if link.contains("://"), let url = URL(string: link) {
             NSWorkspace.shared.open(url)
             return
@@ -50,6 +53,10 @@ final class DroppableTerminalView: LocalProcessTerminalView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         registerForDraggedTypes([.fileURL])
+        // SwiftTerm defaults to .hoverWithModifier (⌘-click). Plain click instead:
+        // ponytail: also makes implicit path-like words clickable, so a click that
+        // lands on one is swallowed instead of reaching a mouse-reporting TUI/tmux.
+        linkHighlightMode = .hover
         linkRouter.term = self
         terminalDelegate = linkRouter
     }
