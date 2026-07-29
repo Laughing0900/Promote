@@ -27,6 +27,7 @@ struct CheatSheetView: View {
             ShortcutRow(keys: ["⌘", "⇧", "\\"], description: "Split pane down"),
             ShortcutRow(keys: ["⌘", "W"], description: "Close current pane"),
             ShortcutRow(keys: ["⌘", "⇧", "R"], description: "Force refresh (reload PR / branch / agent status)"),
+            ShortcutRow(keys: ["⌘", "⌥", "C"], description: "Copy relative path (~/…) of selected session"),
             ShortcutRow(keys: ["⌘", "1-9"], description: "Jump to session (sidebar order)"),
             ShortcutRow(keys: ["⌘", "="], description: "Increase font size"),
             ShortcutRow(keys: ["⌘", "−"], description: "Decrease font size"),

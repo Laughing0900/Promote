@@ -2,22 +2,6 @@ import SwiftUI
 import UniformTypeIdentifiers
 import AppKit
 
-// dividers/headers/sessions flattened into one ForEach so a single onInsert covers
-// every gap — including after each group's last row, which per-group ForEach can't
-private enum SidebarRow: Identifiable {
-    case divider(prevGroup: String, nextGroup: String)
-    case header(String)
-    case session(Session, group: String)
-
-    var id: String {
-        switch self {
-        case .divider(_, let next): return "d:\(next)"
-        case .header(let group): return "h:\(group)"
-        case .session(let s, _): return "s:\(s.name)"
-        }
-    }
-}
-
 struct SidebarView: View {
     @ObservedObject var store: SessionStore
 
@@ -25,8 +9,8 @@ struct SidebarView: View {
     @State private var hoveredAgent: String?
     @State private var editingSession: String?
     @State private var renameText = ""
-    @State private var groupingSession: String?
-    @State private var newGroupName = ""
+    @State private var editingDivider: String?
+    @State private var dividerText = ""
     @State private var hoveredSession: String?
 
     @AppStorage("agentsPanelHeight") private var agentsPanelHeight = 160.0
@@ -35,6 +19,7 @@ struct SidebarView: View {
     @State private var dragBaseHeight: Double?
 
     @FocusState private var renameFocused: Bool
+    @FocusState private var dividerFocused: Bool
 
     private var hotkeyIndexBySession: [String: Int] {
         Dictionary(uniqueKeysWithValues: store.hotkeyOrderedSessions.enumerated().prefix(9).map {
@@ -51,22 +36,6 @@ struct SidebarView: View {
         }
         .background(Color(nsColor: .underPageBackgroundColor).ignoresSafeArea())
         .toolbar(removing: .sidebarToggle)
-        .alert("New Group", isPresented: Binding(
-            get: { groupingSession != nil },
-            set: { if !$0 { groupingSession = nil } }
-        )) {
-            TextField("Group name", text: $newGroupName)
-            Button("Create") {
-                let candidate = newGroupName.trimmingCharacters(in: .whitespacesAndNewlines)
-                if let session = groupingSession, !candidate.isEmpty {
-                    store.setGroup(session, to: candidate)
-                }
-                groupingSession = nil
-            }
-            Button("Cancel", role: .cancel) {
-                groupingSession = nil
-            }
-        }
         .confirmationDialog(
             "Kill session \u{201C}\(pendingDelete ?? "")\u{201D}?",
             isPresented: Binding(
@@ -87,15 +56,7 @@ struct SidebarView: View {
     }
 
     private var sessionList: some View {
-        // grouped filters/sorts every call; compute once per render
-        let grouped = store.grouped
-
-        var rows: [SidebarRow] = []
-        for (idx, entry) in grouped.enumerated() {
-            if idx > 0 { rows.append(.divider(prevGroup: grouped[idx - 1].0, nextGroup: entry.0)) }
-            if entry.0 != store.defaultGroup { rows.append(.header(entry.0)) }
-            for session in entry.1 { rows.append(.session(session, group: entry.0)) }
-        }
+        let items = store.sidebarItems
 
         // min row height 1: rows size to content; no forced 24px spacer rows
         return List(selection: $store.selected) {
@@ -106,16 +67,11 @@ struct SidebarView: View {
                 .listRowInsets(EdgeInsets())
                 .selectionDisabled()
 
-            ForEach(rows) { row in
-                switch row {
-                case .divider:
-                    // divider as its own non-selectable row so hover/selection pills never cover it
-                    Divider()
-                        .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 2, trailing: 8))
-                        .selectionDisabled()
-                case .header(let name):
-                    groupHeader(name, isDefault: false)
-                case .session(let session, _):
+            ForEach(items) { item in
+                switch item {
+                case .divider(let id, let title):
+                    dividerRow(id: id, title: title)
+                case .session(let session):
                     sessionRow(session)
                         .tag(session.name)
                         .contextMenu { sessionMenu(session) }
@@ -123,16 +79,15 @@ struct SidebarView: View {
                 }
             }
             .onInsert(of: [.utf8PlainText, .plainText]) { index, providers in
-                let target = dropTarget(rows: rows, insertIndex: index)
                 providers.first?.loadObject(ofClass: NSString.self) { object, _ in
-                    guard let name = object as? String else { return }
+                    guard let token = object as? String else { return }
                     DispatchQueue.main.async {
-                        store.handleDrop(name: name, group: target.group, at: target.at)
+                        store.handleDrop(token: token, at: index)
                     }
                 }
             }
 
-            if grouped.flatMap(\.1).isEmpty {
+            if store.sessions.isEmpty {
                 Text("No tmux sessions")
                     .foregroundStyle(.secondary)
                     .selectionDisabled()
@@ -145,47 +100,53 @@ struct SidebarView: View {
         .padding(.top, -34)
     }
 
-    // map a flat insert index to (group, position-in-group) by looking at the row above the gap
-    private func dropTarget(rows: [SidebarRow], insertIndex: Int) -> (group: String?, at: Int) {
-        func normalized(_ g: String) -> String? { g == store.defaultGroup ? nil : g }
-
-        guard let firstRow = rows.first else { return (nil, 0) }
-        guard insertIndex > 0 else {
-            // gap above everything → top of first group
-            switch firstRow {
-            case .divider(_, let g), .header(let g), .session(_, let g):
-                return (normalized(g), 0)
+    // divider row: optional header above the line; double-click edits the header,
+    // draggable via its order token, non-selectable so selection pills never cover it
+    @ViewBuilder
+    private func dividerRow(id: String, title: String) -> some View {
+        Group {
+            if editingDivider == id {
+                TextField("Header", text: $dividerText)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($dividerFocused)
+                    .onSubmit { commitDividerTitle(id) }
+                    .onExitCommand { editingDivider = nil }
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    if !title.isEmpty {
+                        Text(title)
+                            .font(.caption.smallCaps().weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    Divider()
+                }
+                .padding(.vertical, 3)
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) { beginDividerEdit(id, title: title) }
             }
         }
-
-        switch rows[min(insertIndex, rows.count) - 1] {
-        case .session(_, let g):
-            let pos = rows.prefix(insertIndex).filter {
-                if case .session(_, let sg) = $0 { return sg == g }
-                return false
-            }.count
-            return (normalized(g), pos)
-        case .header(let g):
-            return (normalized(g), 0)
-        case .divider(_, let next):
-            // gap below the divider = "top of the group underneath";
-            // gap above it resolves via the session case → end of the group above
-            return (normalized(next), 0)
+        .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
+        .selectionDisabled()
+        .contextMenu {
+            Button(title.isEmpty ? "Add Header" : "Edit Header") { beginDividerEdit(id, title: title) }
+            if !title.isEmpty {
+                Button("Remove Header") { store.setDividerTitle(id, "") }
+            }
+            Button("Remove Divider", role: .destructive) { store.removeDivider(id) }
         }
+        .onDrag { NSItemProvider(object: (SessionStore.dividerPrefix + id) as NSString) }
     }
 
-    @ViewBuilder
-    private func groupHeader(_ name: String, isDefault: Bool) -> some View {
-        if !isDefault {
-            HStack {
-                Text(name)
-                    .font(.caption.smallCaps().weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 8))
-            .selectionDisabled()
-        }
+    private func beginDividerEdit(_ id: String, title: String) {
+        dividerText = title
+        editingDivider = id
+        // TextField isn't in the hierarchy yet this tick; focus next runloop pass
+        DispatchQueue.main.async { dividerFocused = true }
+    }
+
+    private func commitDividerTitle(_ id: String) {
+        editingDivider = nil
+        store.setDividerTitle(id, dividerText)
     }
 
     @ViewBuilder
@@ -310,12 +271,22 @@ struct SidebarView: View {
                 hoveredSession = nil
             }
         }
+        .onTapGesture(count: 2) {
+            beginRename(session)
+        }
         .onTapGesture {
             store.selected = session.name
         }
     }
 
-    private static let copyKinds = ["Name", "Path", "Branch"]
+    private func beginRename(_ session: Session) {
+        renameText = session.name
+        editingSession = session.name
+        // TextField isn't in the hierarchy yet this tick; focus next runloop pass
+        DispatchQueue.main.async { renameFocused = true }
+    }
+
+    private static let copyKinds = ["Name", "Path", "Relative Path", "Branch"]
     private static let editApps: [(name: String, bundleId: String)] = [
         ("VS Code", "com.microsoft.VSCode"),
         ("Cursor", "com.todesktop.230313mzl4w4u92"),
@@ -326,6 +297,7 @@ struct SidebarView: View {
         switch kind {
         case "Name": return session.name
         case "Path": return session.path.isEmpty ? nil : session.path
+        case "Relative Path": return session.path.isEmpty ? nil : (session.path as NSString).abbreviatingWithTildeInPath
         case "Branch": return store.details(for: session.name).branch
         default: return nil
         }
@@ -354,30 +326,9 @@ struct SidebarView: View {
     @ViewBuilder
     private func sessionMenu(_ session: Session) -> some View {
         Button("Rename") {
-            renameText = session.name
-            editingSession = session.name
-            // TextField isn't in the hierarchy yet this tick; focus next runloop pass
-            DispatchQueue.main.async { renameFocused = true }
+            beginRename(session)
         }
        
-        Menu("Group") {
-            Button("Default (no group)") {
-                store.setGroup(session.name, to: nil)
-            }
-
-            ForEach(store.groupNames, id: \.self) { group in
-                Button(group) {
-                    store.setGroup(session.name, to: group)
-                }
-            }
-
-            Divider()
-
-            Button("New Group\u{2026}") {
-                groupingSession = session.name
-                newGroupName = ""
-            }
-        }
         Menu("Color") {
             Button("None") {
                 store.setColor(session.name, hex: nil)
@@ -404,6 +355,10 @@ struct SidebarView: View {
                     store.setColor(session.name, hex: hexString(color))
                 }
             }
+        }
+
+        Button("Add Divider") {
+            store.addDivider(after: session.name)
         }
 
         Divider()

@@ -1,5 +1,6 @@
 import SwiftUI
 import Foundation
+import AppKit
 
 // owns app state and runs all tmux/git/gh shell work off the main thread
 final class SessionStore: ObservableObject {
@@ -7,7 +8,9 @@ final class SessionStore: ObservableObject {
     @Published var selected: String?
     @Published private(set) var details: [String: SessionDetails] = [:]
     @Published var colors: [String: String] = Settings.colors
-    @Published var groups: [String: String] = Settings.groups
+    // sidebar order tokens: session names + divider tokens ("§divider:<uuid>")
+    @Published private(set) var orderTokens: [String] = Settings.order
+    @Published private(set) var dividerTitles: [String: String] = Settings.dividerTitles
     @Published var locked: Set<String> = Set(Settings.locked)
     // set when ⌘W would kill the session (last pane); RootView shows the confirm dialog
     @Published var pendingCloseLastPane: String?
@@ -16,8 +19,6 @@ final class SessionStore: ObservableObject {
     @Published private(set) var agents: [AgentInfo] = []
     // bumped to force-rebuild the terminal view (fresh SwiftTerm state; clears stuck kitty keyboard flags)
     @Published private(set) var terminalEpoch = 0
-
-    let defaultGroup = ""
 
     // ponytail: one serial queue keeps shell work + caches simple and deterministic
     private let workerQueue = DispatchQueue(label: "session.store.worker", qos: .userInitiated)
@@ -46,22 +47,31 @@ final class SessionStore: ObservableObject {
 
     // MARK: - Derived state
 
-    var grouped: [(String, [Session])] {
-        sections(from: sessions)
+    // ponytail: "§divider:" prefix can't collide with a sane tmux session name; no escaping
+    static let dividerPrefix = "§divider:"
+    static func dividerId(_ token: String) -> String? {
+        token.hasPrefix(dividerPrefix) ? String(token.dropFirst(dividerPrefix.count)) : nil
     }
 
-    var hotkeyOrderedSessions: [Session] {
-        sections(from: sessions).flatMap(\.1)
-    }
-
-    var groupNames: [String] {
-        let activeNames = Set(sessions.map(\.name))
-        let names = groups.compactMap { key, value -> String? in
-            guard activeNames.contains(key) else { return nil }
-            return normalizedGroupName(value)
+    // flat sidebar: live sessions in manual order, dividers interleaved; unknown sessions appended
+    var sidebarItems: [SidebarItem] {
+        let live = Dictionary(uniqueKeysWithValues: sessions.map { ($0.name, $0) })
+        var seen = Set<String>()
+        var items: [SidebarItem] = []
+        for token in orderTokens {
+            if let id = Self.dividerId(token) {
+                items.append(.divider(id: id, title: dividerTitles[id] ?? ""))
+            } else if let session = live[token], seen.insert(token).inserted {
+                items.append(.session(session))
+            }
         }
-        return Array(Set(names)).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        for session in sessions where !seen.contains(session.name) {
+            items.append(.session(session))
+        }
+        return items
     }
+
+    var hotkeyOrderedSessions: [Session] { sessions }
 
     func details(for sessionName: String) -> SessionDetails {
         details[sessionName] ?? SessionDetails()
@@ -158,10 +168,6 @@ final class SessionStore: ObservableObject {
         // empty list means the server is down (reboot) or the query failed — pruning
         // then would wipe every group/color/lock/order entry.
         if !nextSessions.isEmpty {
-            if groups.keys.contains(where: { !sessionNames.contains($0) }) {
-                groups = groups.filter { sessionNames.contains($0.key) }
-                saveGroups()
-            }
             if colors.keys.contains(where: { !sessionNames.contains($0) }) {
                 colors = colors.filter { sessionNames.contains($0.key) }
                 saveColors()
@@ -170,8 +176,10 @@ final class SessionStore: ObservableObject {
                 locked = locked.filter { sessionNames.contains($0) }
                 Settings.locked = Array(locked)
             }
-            if Settings.order.contains(where: { !sessionNames.contains($0) }) {
-                Settings.order = Settings.order.filter { sessionNames.contains($0) }
+            // prune dead session tokens; divider tokens always survive
+            if orderTokens.contains(where: { Self.dividerId($0) == nil && !sessionNames.contains($0) }) {
+                orderTokens = orderTokens.filter { Self.dividerId($0) != nil || sessionNames.contains($0) }
+                Settings.order = orderTokens
             }
         }
 
@@ -521,6 +529,15 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    // ⌘⌥C: selected session's path, home-abbreviated to ~/…
+    func copySelectedRelativePath() {
+        guard let name = selected,
+              let path = sessions.first(where: { $0.name == name })?.path,
+              !path.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString((path as NSString).abbreviatingWithTildeInPath, forType: .string)
+    }
+
     func rename(_ old: String, to proposed: String) {
         let next = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !next.isEmpty, next != old else { return }
@@ -537,19 +554,14 @@ final class SessionStore: ObservableObject {
                     self.colors[next] = color
                     self.saveColors()
                 }
-                if let group = self.groups.removeValue(forKey: old) {
-                    self.groups[next] = group
-                    self.saveGroups()
-                }
                 if self.locked.remove(old) != nil {
                     self.locked.insert(next)
                     Settings.locked = Array(self.locked)
                 }
 
-                var order = Settings.order
-                if let idx = order.firstIndex(of: old) {
-                    order[idx] = next
-                    Settings.order = order
+                if let idx = self.orderTokens.firstIndex(of: old) {
+                    self.orderTokens[idx] = next
+                    Settings.order = self.orderTokens
                 }
 
                 if self.selected == old {
@@ -588,44 +600,54 @@ final class SessionStore: ObservableObject {
         saveColors()
     }
 
-    func setGroup(_ sessionName: String, to group: String?) {
-        if let normalized = normalizedGroupName(group) {
-            groups[sessionName] = normalized
-        } else {
-            groups.removeValue(forKey: sessionName)
-        }
-        saveGroups()
+    // canonical token list matching exactly what the sidebar renders
+    private func canonicalTokens() -> [String] {
+        sidebarItems.map(\.token)
     }
 
-    // Drag-drop reorder. Index is within the destination group's visible rows.
-    func handleDrop(name: String, group: String?, at index: Int) {
-        guard let moving = sessions.first(where: { $0.name == name }) else { return }
+    func addDivider(after sessionName: String) {
+        var tokens = canonicalTokens()
+        let token = Self.dividerPrefix + UUID().uuidString
+        let at = tokens.firstIndex(of: sessionName).map { $0 + 1 } ?? tokens.count
+        tokens.insert(token, at: at)
+        orderTokens = tokens
+        Settings.order = tokens
+    }
 
-        let normalizedGroup = normalizedGroupName(group)
-        var ordered = sessions.filter { $0.name != name }
+    func removeDivider(_ id: String) {
+        orderTokens.removeAll { Self.dividerId($0) == id }
+        Settings.order = orderTokens
+        dividerTitles.removeValue(forKey: id)
+        Settings.dividerTitles = dividerTitles
+    }
 
-        if let normalizedGroup {
-            groups[name] = normalizedGroup
+    func setDividerTitle(_ id: String, _ title: String) {
+        let cleaned = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.isEmpty {
+            dividerTitles.removeValue(forKey: id)
         } else {
-            groups.removeValue(forKey: name)
+            dividerTitles[id] = cleaned
         }
-        saveGroups()
+        Settings.dividerTitles = dividerTitles
+    }
 
-        let destinationRows = ordered.filter { normalizedGroupName(groups[$0.name]) == normalizedGroup }
+    // Drag-drop reorder. Token is a session name or divider token; index is the
+    // gap position in the flat sidebar item list.
+    func handleDrop(token: String, at index: Int) {
+        var tokens = canonicalTokens()
+        guard let from = tokens.firstIndex(of: token) else { return }
 
-        var insertAt = ordered.count
-        if index < destinationRows.count {
-            let anchor = destinationRows[index]
-            insertAt = ordered.firstIndex(of: anchor) ?? ordered.count
-        } else if let last = destinationRows.last {
-            insertAt = (ordered.firstIndex(of: last) ?? (ordered.count - 1)) + 1
-        }
+        var insertAt = min(max(0, index), tokens.count)
+        tokens.remove(at: from)
+        if from < insertAt { insertAt -= 1 }
+        tokens.insert(token, at: min(insertAt, tokens.count))
 
-        insertAt = min(max(0, insertAt), ordered.count)
-        ordered.insert(moving, at: insertAt)
+        orderTokens = tokens
+        Settings.order = tokens
 
-        sessions = ordered
-        Settings.order = sessions.map(\.name)
+        // resort published sessions to match
+        let rank = Dictionary(uniqueKeysWithValues: tokens.enumerated().map { ($0.element, $0.offset) })
+        sessions = sessions.sorted { (rank[$0.name] ?? .max) < (rank[$1.name] ?? .max) }
     }
 
     // escape hatch for wedged terminal key state: rebuild the SwiftTerm view + reattach
@@ -661,37 +683,27 @@ final class SessionStore: ObservableObject {
 
     // MARK: - Private helpers
 
-    private func sections(from source: [Session]) -> [(String, [Session])] {
-        guard !source.isEmpty else { return [(defaultGroup, [])] }
-
-        var output: [(String, [Session])] = []
-
-        let sortedGroups = Array(Set(source.compactMap { normalizedGroupName(groups[$0.name]) }))
-            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-
-        for group in sortedGroups {
-            let rows = source.filter { normalizedGroupName(groups[$0.name]) == group }
-            if !rows.isEmpty {
-                output.append((group, rows))
-            }
-        }
-
-        let ungrouped = source.filter { normalizedGroupName(groups[$0.name]) == nil }
-        output.append((defaultGroup, ungrouped))
-        return output.filter { !$0.1.isEmpty || $0.0 == defaultGroup }
-    }
-
-    private func normalizedGroupName(_ value: String?) -> String? {
-        guard let value else { return nil }
-        let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return cleaned.isEmpty ? nil : cleaned
-    }
-
     private func saveColors() {
         Settings.colors = colors
     }
+}
 
-    private func saveGroups() {
-        Settings.groups = groups
+enum SidebarItem: Identifiable {
+    case divider(id: String, title: String)
+    case session(Session)
+
+    var id: String {
+        switch self {
+        case .divider(let id, _): return "d:" + id
+        case .session(let session): return "s:" + session.name
+        }
+    }
+
+    // drag payload / order-token form
+    var token: String {
+        switch self {
+        case .divider(let id, _): return SessionStore.dividerPrefix + id
+        case .session(let session): return session.name
+        }
     }
 }

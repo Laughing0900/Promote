@@ -168,6 +168,9 @@ struct PromoteApp: App {
             }
 
             CommandMenu("Session") {
+                Button("Copy Relative Path") { store.copySelectedRelativePath() }
+                    .keyboardShortcut("c", modifiers: [.command, .option])
+
                 Button("Split Pane Right") { store.splitPaneRight() }
                     .keyboardShortcut("\\", modifiers: .command)
 

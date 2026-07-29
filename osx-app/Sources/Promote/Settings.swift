@@ -11,10 +11,10 @@ enum Settings {
         set { d.set(newValue, forKey: "sessionColors") }
     }
 
-    // session name -> group name
-    static var groups: [String: String] {
-        get { d.dictionary(forKey: "sessionGroups") as? [String: String] ?? [:] }
-        set { d.set(newValue, forKey: "sessionGroups") }
+    // divider uuid -> header title
+    static var dividerTitles: [String: String] {
+        get { d.dictionary(forKey: "dividerTitles") as? [String: String] ?? [:] }
+        set { d.set(newValue, forKey: "dividerTitles") }
     }
 
     // session names whose panes can't be closed/killed
@@ -23,7 +23,7 @@ enum Settings {
         set { d.set(newValue, forKey: "sessionLocked") }
     }
 
-    // manual sidebar order (session names)
+    // manual sidebar order: session names + divider tokens ("§divider:<uuid>")
     static var order: [String] {
         get { d.stringArray(forKey: "sessionOrder") ?? [] }
         set { d.set(newValue, forKey: "sessionOrder") }
