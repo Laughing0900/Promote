@@ -80,6 +80,7 @@ let palette: [PaletteColor] = [
     .init(id: "Orange", hex: "#E67E22"), .init(id: "Amber", hex: "#D4A017"),
     .init(id: "Olive", hex: "#A2B86C"), .init(id: "Green", hex: "#27AE60"),
     .init(id: "Teal", hex: "#16A085"), .init(id: "Aqua", hex: "#2E9CCA"),
+    .init(id: "Rem", hex: "#90BFF9"),
     .init(id: "Blue", hex: "#2A7DE1"), .init(id: "Navy", hex: "#34568B"),
     .init(id: "Indigo", hex: "#4B4FCE"), .init(id: "Purple", hex: "#8E44AD"),
     .init(id: "Magenta", hex: "#D6336C"), .init(id: "Rose", hex: "#C2185B"),

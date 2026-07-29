@@ -223,13 +223,15 @@ struct SidebarView: View {
                         .help(pr.state.label)
                     }
 
-                    if let diff = details.diff {
+                    // diff counts only while hovering the row or holding ⌘, same reveal as the hotkey index
+                    let showDiff = store.cmdHeld || hoveredSession == session.name
+                    if let diff = details.diff, showDiff {
                         (Text(verbatim: "+\(diff.added)").foregroundStyle(colorFromHex("#17B169") ?? .green)
                             + Text(verbatim: "-\(diff.deleted)").foregroundStyle(colorFromHex("#CF222E") ?? .red))
                             .help("Changed lines: \(diff.added) added, \(diff.deleted) deleted")
                     }
 
-                    if details.pr == nil && details.diff == nil {
+                    if details.pr == nil && (details.diff == nil || !showDiff) {
                         Text(" ")
                     }
                 }
