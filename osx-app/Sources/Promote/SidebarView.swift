@@ -36,6 +36,13 @@ struct SidebarView: View {
         }
         .background(Color(nsColor: .underPageBackgroundColor).ignoresSafeArea())
         .toolbar(removing: .sidebarToggle)
+        // click-away commits the edit; Esc cancels first (onExitCommand nils editing state before focus drops)
+        .onChange(of: renameFocused) { _, focused in
+            if !focused, let name = editingSession { commitRename(old: name) }
+        }
+        .onChange(of: dividerFocused) { _, focused in
+            if !focused, let id = editingDivider { commitDividerTitle(id) }
+        }
         .confirmationDialog(
             "Kill session \u{201C}\(pendingDelete ?? "")\u{201D}?",
             isPresented: Binding(
@@ -325,44 +332,6 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func sessionMenu(_ session: Session) -> some View {
-        Button("Rename") {
-            beginRename(session)
-        }
-       
-        Menu("Color") {
-            Button("None") {
-                store.setColor(session.name, hex: nil)
-            }
-
-            Divider()
-
-            ForEach(palette) { entry in
-                Button {
-                    store.setColor(session.name, hex: entry.hex)
-                } label: {
-                    Label {
-                        Text(entry.id)
-                    } icon: {
-                        Image(nsImage: colorSwatch(NSColor(entry.color)))
-                    }
-                }
-            }
-
-            Divider()
-
-            Button("Choose Custom Color\u{2026}") {
-                ColorPanelBridge.shared.open { color in
-                    store.setColor(session.name, hex: hexString(color))
-                }
-            }
-        }
-
-        Button("Add Divider") {
-            store.addDivider(after: session.name)
-        }
-
-        Divider()
-
         Menu {
             ForEach(Self.copyKinds, id: \.self) { kind in
                 Button(kind) { doCopy(kind, session) }
@@ -397,6 +366,44 @@ struct SidebarView: View {
             }
         }
         .disabled(store.details(for: session.name).pr == nil)
+
+        Divider()
+
+        Button("Rename") {
+            beginRename(session)
+        }
+
+        Menu("Color") {
+            Button("None") {
+                store.setColor(session.name, hex: nil)
+            }
+
+            Divider()
+
+            ForEach(palette) { entry in
+                Button {
+                    store.setColor(session.name, hex: entry.hex)
+                } label: {
+                    Label {
+                        Text(entry.id)
+                    } icon: {
+                        Image(nsImage: colorSwatch(NSColor(entry.color)))
+                    }
+                }
+            }
+
+            Divider()
+
+            Button("Choose Custom Color\u{2026}") {
+                ColorPanelBridge.shared.open { color in
+                    store.setColor(session.name, hex: hexString(color))
+                }
+            }
+        }
+
+        Button("Add Divider") {
+            store.addDivider(after: session.name)
+        }
 
         Divider()
 
