@@ -437,13 +437,15 @@ final class SessionStore: ObservableObject {
 
         let tail = Shell.tmux("capture-pane", "-p", "-t", pane, "-S", "-30") ?? ""
         let region = promptRegion(of: tail).lowercased()
+        // busy footer sits above the input rule, outside the dialog region
+        let full = tail.lowercased()
 
         let status: AgentStatus
         if blockedPrompts.contains(where: { region.contains($0) }) {
             status = .blocked
         } else if title.hasPrefix("✳") {
             status = agentWorked.contains(pane) ? .done : .idle
-        } else if (now - activity) < 2.5 || workingPrompts.contains(where: { region.contains($0) }) {
+        } else if (now - activity) < 2.5 || workingPrompts.contains(where: { full.contains($0) }) {
             // no title signal (codex/opencode/cursor): activity + busy-footer fallback
             agentWorked.insert(pane)
             status = .working
@@ -455,12 +457,16 @@ final class SessionStore: ObservableObject {
         return status
     }
 
-    // claude draws its input/permission UI in a "╭─" box at the bottom; scanning only from the
-    // last box top down keeps transcript text (quoted prompts, old dialogs) from false-positiving.
-    // ponytail: whole tail when no box found (codex/opencode draw no boxes)
+    // claude draws its input box and permission dialog under a full-width "─" rule (older builds
+    // used a "╭─" box top). Scanning only from the last rule down keeps transcript prose — an agent
+    // writing "do you want" — from reading as a permission prompt.
+    // ponytail: whole tail when no rule found (codex/opencode draw neither)
     private func promptRegion(of tail: String) -> String {
         let lines = tail.split(whereSeparator: \.isNewline)
-        guard let idx = lines.lastIndex(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("╭") }) else {
+        guard let idx = lines.lastIndex(where: { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            return trimmed.hasPrefix("╭") || (trimmed.count >= 20 && trimmed.allSatisfy { $0 == "─" })
+        }) else {
             return tail
         }
         return lines[idx...].joined(separator: "\n")
