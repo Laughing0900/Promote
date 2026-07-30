@@ -424,28 +424,33 @@ final class SessionStore: ObservableObject {
     private func classifyAgentStatus(pane: String, title: String, activity: Double, now: Double) -> AgentStatus {
         // claude publishes state via OSC title (tmux tracks it as pane_title):
         // braille spinner U+2800-28FF = working, "✳" = turn finished
-        if let first = title.unicodeScalars.first, (0x2800...0x28FF).contains(first.value) {
-            agentWorked.insert(pane)
-            paneStatusCache[pane] = nil  // spinner is live truth; don't serve a stale verdict after it ends
-            return .working
-        }
+        let spinner = title.unicodeScalars.first.map { (0x2800...0x28FF).contains($0.value) } ?? false
 
         // ponytail: throttle capture-pane to once per 4s per pane; status can lag up to 4s
         if let cached = paneStatusCache[pane], now - cached.at < 4 {
             return cached.status
         }
 
-        let tail = Shell.tmux("capture-pane", "-p", "-t", pane, "-S", "-30") ?? ""
-        let region = promptRegion(of: tail).lowercased()
-        // busy footer sits above the input rule, outside the dialog region
-        let full = tail.lowercased()
+        let lines = Shell.tmux("capture-pane", "-p", "-t", pane, "-S", "-30")?
+            .split(whereSeparator: \.isNewline) ?? []
+        let region = promptRegion(of: lines).lowercased()
+        // status footer sits above the input rule, outside the dialog region
+        let footer = footerRegion(of: lines).lowercased()
+        // a background shell that outlives the turn keeps the spinner animating and the pane
+        // redrawing, so neither the title nor pane activity can be trusted; the footer switches
+        // from a live counter ("Spelunking… (3m · ↓ 10k tokens)") to a finished-turn summary
+        // ("Worked for 3m 21s · 1 shell still running") and is the only signal that still flips
+        let turnEnded = footer.contains("still running")
 
         let status: AgentStatus
         if blockedPrompts.contains(where: { region.contains($0) }) {
             status = .blocked
-        } else if title.hasPrefix("✳") {
+        } else if spinner && !turnEnded {
+            agentWorked.insert(pane)
+            status = .working
+        } else if title.hasPrefix("✳") || spinner {
             status = agentWorked.contains(pane) ? .done : .idle
-        } else if (now - activity) < 2.5 || workingPrompts.contains(where: { full.contains($0) }) {
+        } else if !turnEnded && ((now - activity) < 2.5 || workingPrompts.contains(where: { footer.contains($0) })) {
             // no title signal (codex/opencode/cursor): activity + busy-footer fallback
             agentWorked.insert(pane)
             status = .working
@@ -461,15 +466,23 @@ final class SessionStore: ObservableObject {
     // used a "╭─" box top). Scanning only from the last rule down keeps transcript prose — an agent
     // writing "do you want" — from reading as a permission prompt.
     // ponytail: whole tail when no rule found (codex/opencode draw neither)
-    private func promptRegion(of tail: String) -> String {
-        let lines = tail.split(whereSeparator: \.isNewline)
-        guard let idx = lines.lastIndex(where: { line in
+    private func promptRegion(of lines: [Substring]) -> String {
+        guard let idx = ruleIndex(of: lines) else { return lines.joined(separator: "\n") }
+        return lines[idx...].joined(separator: "\n")
+    }
+
+    // the status footer sits directly above the input rule, sometimes with a tip line under it;
+    // matching busy/idle markers here instead of the whole tail keeps agent prose from scoring
+    private func footerRegion(of lines: [Substring]) -> String {
+        let end = ruleIndex(of: lines) ?? lines.count
+        return lines[max(0, end - 6)..<end].joined(separator: "\n")
+    }
+
+    private func ruleIndex(of lines: [Substring]) -> Int? {
+        lines.lastIndex { line in
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             return trimmed.hasPrefix("╭") || (trimmed.count >= 20 && trimmed.allSatisfy { $0 == "─" })
-        }) else {
-            return tail
         }
-        return lines[idx...].joined(separator: "\n")
     }
 
     // MARK: - User actions
