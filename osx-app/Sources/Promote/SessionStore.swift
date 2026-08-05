@@ -30,7 +30,7 @@ final class SessionStore: ObservableObject {
     private var branchCache: [String: (Date, String?)] = [:]
     private var diffCache: [String: (Date, GitDiff?)] = [:]
     // ponytail: capture-pane is the hot subprocess; reuse each pane's verdict for a few seconds
-    private var paneStatusCache: [String: (at: Double, status: AgentStatus)] = [:]
+    private var paneStatusCache: [String: (at: Double, status: AgentStatus, turnEnded: Bool)] = [:]
     private var agentWorked: Set<String> = []
 
     private let agentTools: Set<String> = ["claude", "pi", "opencode", "codex"]
@@ -426,8 +426,13 @@ final class SessionStore: ObservableObject {
         // braille spinner U+2800-28FF = working, "✳" = turn finished
         let spinner = title.unicodeScalars.first.map { (0x2800...0x28FF).contains($0.value) } ?? false
 
-        // ponytail: throttle capture-pane to once per 4s per pane; status can lag up to 4s
-        if let cached = paneStatusCache[pane], now - cached.at < 4 {
+        // ponytail: throttle capture-pane to once per 4s per pane; status can lag up to 4s.
+        // The title spinner is live truth and costs no subprocess (pane_title comes with
+        // list-panes), so a cached verdict that contradicts it is stale — re-capture instead of
+        // serving it. A turn that ended with a background shell keeps spinning, so that verdict
+        // stays cached rather than re-capturing every pass.
+        if let cached = paneStatusCache[pane], now - cached.at < 4,
+           !spinner || cached.status == .working || cached.turnEnded {
             return cached.status
         }
 
@@ -458,7 +463,7 @@ final class SessionStore: ObservableObject {
             status = agentWorked.contains(pane) ? .done : .idle
         }
 
-        paneStatusCache[pane] = (now, status)
+        paneStatusCache[pane] = (now, status, turnEnded)
         return status
     }
 
