@@ -129,7 +129,7 @@ struct SidebarView: View {
                 }
                 .padding(.vertical, 3)
                 .contentShape(Rectangle())
-                .onTapGesture(count: 2) { beginDividerEdit(id, title: title) }
+                .simultaneousGesture(TapGesture(count: 2).onEnded { beginDividerEdit(id, title: title) })
             }
         }
         .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
@@ -280,12 +280,14 @@ struct SidebarView: View {
                 hoveredSession = nil
             }
         }
-        .onTapGesture(count: 2) {
+        // simultaneousGesture, not onTapGesture: an exclusive tap recognizer swallows the
+        // mouse-down and .onDrag never starts
+        .simultaneousGesture(TapGesture(count: 2).onEnded {
             beginRename(session)
-        }
-        .onTapGesture {
+        })
+        .simultaneousGesture(TapGesture().onEnded {
             store.selected = session.name
-        }
+        })
     }
 
     private func beginRename(_ session: Session) {
