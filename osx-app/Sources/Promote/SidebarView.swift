@@ -12,6 +12,8 @@ struct SidebarView: View {
     @State private var editingDivider: String?
     @State private var dividerText = ""
     @State private var hoveredSession: String?
+    @State private var dragging = false
+    @State private var binTargeted = false
 
     @AppStorage("agentsPanelHeight") private var agentsPanelHeight = 160.0
     @AppStorage("lastCopyKind") private var lastCopyKind = "Path"
@@ -35,6 +37,10 @@ struct SidebarView: View {
             }
         }
         .background(Color(nsColor: .underPageBackgroundColor).ignoresSafeArea())
+        .overlay(alignment: .bottomLeading) {
+            if dragging { bin }
+        }
+        .animation(.spring(duration: 0.2), value: dragging)
         .toolbar(removing: .sidebarToggle)
         // click-away commits the edit; Esc cancels first (onExitCommand nils editing state before focus drops)
         .onChange(of: renameFocused) { _, focused in
@@ -62,6 +68,53 @@ struct SidebarView: View {
         }
     }
 
+    // drop target that appears only while a row is being dragged; dropping a session
+    // kills it, dropping a divider removes it
+    private var bin: some View {
+        Image(systemName: binTargeted ? "trash.fill" : "trash")
+            .font(.system(size: 15, weight: .medium))
+            .foregroundStyle(binTargeted ? Color.white : Color.red)
+            .frame(width: 38, height: 38)
+            .background(Circle().fill(binTargeted ? Color.red : Color(nsColor: .controlBackgroundColor)))
+            .overlay(Circle().strokeBorder(Color.red.opacity(binTargeted ? 0 : 0.6),
+                                           style: StrokeStyle(lineWidth: 1, dash: [3])))
+            .shadow(radius: 3, y: 1)
+            .scaleEffect(binTargeted ? 1.15 : 1)
+            .animation(.spring(duration: 0.15), value: binTargeted)
+            .padding(12)
+            .transition(.scale.combined(with: .opacity))
+            .onDrop(of: [.utf8PlainText, .plainText], isTargeted: $binTargeted) { providers in
+                providers.first?.loadObject(ofClass: NSString.self) { object, _ in
+                    guard let token = object as? String else { return }
+                    DispatchQueue.main.async { discard(token) }
+                }
+                return true
+            }
+    }
+
+    private func discard(_ token: String) {
+        dragging = false
+        if let id = SessionStore.dividerId(token) {
+            store.removeDivider(id)
+        } else {
+            store.kill(token)   // no-ops on locked sessions
+        }
+    }
+
+    // reveals the bin; the drag payload is unchanged
+    private func beginDrag(_ token: String) -> NSItemProvider {
+        dragging = true
+        // ponytail: a cancelled drag fires no SwiftUI callback, so poll the mouse button
+        // instead of bridging NSDraggingSession. .common mode: the drag runs event tracking.
+        let timer = Timer(timeInterval: 0.15, repeats: true) { timer in
+            guard NSEvent.pressedMouseButtons == 0 else { return }
+            timer.invalidate()
+            dragging = false
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        return NSItemProvider(object: token as NSString)
+    }
+
     private var sessionList: some View {
         let items = store.sidebarItems
 
@@ -82,13 +135,14 @@ struct SidebarView: View {
                     sessionRow(session)
                         .tag(session.name)
                         .contextMenu { sessionMenu(session) }
-                        .onDrag { NSItemProvider(object: session.name as NSString) }
+                        .onDrag { beginDrag(session.name) }
                 }
             }
             .onInsert(of: [.utf8PlainText, .plainText]) { index, providers in
                 providers.first?.loadObject(ofClass: NSString.self) { object, _ in
                     guard let token = object as? String else { return }
                     DispatchQueue.main.async {
+                        dragging = false
                         store.handleDrop(token: token, at: index)
                     }
                 }
@@ -141,7 +195,7 @@ struct SidebarView: View {
             }
             Button("Remove Divider", role: .destructive) { store.removeDivider(id) }
         }
-        .onDrag { NSItemProvider(object: (SessionStore.dividerPrefix + id) as NSString) }
+        .onDrag { beginDrag(SessionStore.dividerPrefix + id) }
     }
 
     private func beginDividerEdit(_ id: String, title: String) {
