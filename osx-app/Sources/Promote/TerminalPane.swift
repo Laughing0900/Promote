@@ -100,6 +100,20 @@ struct TerminalPane: NSViewRepresentable {
         return term
     }
 
+    // SwiftTerm's LocalProcess.deinit closes the pty but deliberately never signals the
+    // child, and terminate() cancels the exit monitor before anything waitpid()s it. Without
+    // both here, every session switch/close leaks a live `tmux attach-session` client plus a
+    // zombie — they pile up until tmux size negotiation blanks the pane and the app wedges.
+    static func dismantleNSView(_ view: DroppableTerminalView, coordinator: ()) {
+        let pid = view.process.shellPid
+        view.terminate()
+        guard pid > 0 else { return }
+        DispatchQueue.global(qos: .utility).async {
+            var status: Int32 = 0
+            waitpid(pid, &status, 0)
+        }
+    }
+
     func updateNSView(_ view: DroppableTerminalView, context: Context) {
         let currentSize = view.font.pointSize
         if abs(currentSize - fontSize) > 0.001 {
