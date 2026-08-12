@@ -299,9 +299,24 @@ struct SidebarView: View {
 
             HStack(alignment: .top, spacing: 6) {
                 VStack(alignment: .trailing, spacing: 3) {
-                    if let agentStatus {
-                        StatusDot(status: agentStatus)
-                            .help("Agent: \(agentStatus.title)")
+                    HStack(spacing: 4) {
+                        if hoveredSession == session.name && !session.path.isEmpty {
+                            Button {
+                                doEdit(lastEditApp, session)
+                            } label: {
+                                Image(systemName: "pencil")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .help("Edit in \(lastEditApp)")
+                        }
+
+                        if let agentStatus {
+                            StatusDot(status: agentStatus)
+                                .help("Agent: \(agentStatus.title)")
+                        }
                     }
 
                     Spacer(minLength: 0)
