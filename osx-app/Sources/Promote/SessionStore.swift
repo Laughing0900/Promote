@@ -22,16 +22,34 @@ final class SessionStore: ObservableObject {
 
     // ponytail: one serial queue keeps shell work + caches simple and deterministic
     private let workerQueue = DispatchQueue(label: "session.store.worker", qos: .userInitiated)
+    // user-triggered tmux commands (split, etc.) — must not queue behind a slow
+    // refresh pass (git/gh work can hold workerQueue for seconds); cache-free only
+    private let actionQueue = DispatchQueue(label: "session.store.actions", qos: .userInteractive)
+    // slow per-session git/gh badge work; on its own queue so it never blocks the
+    // fast tmux snapshot (or the next user action queued behind it)
+    private let detailsQueue = DispatchQueue(label: "session.store.details", qos: .utility)
     private var refreshInFlight = false
     private var refreshPending = false
+    // main-only: sessions observed alive at least once this app run. Metadata
+    // (order/color/lock) is pruned only for names in this set, so a partial list
+    // right after a reboot (sessions restored one by one) can't wipe entries for
+    // sessions that just haven't come back yet.
+    private var seenLive: Set<String> = []
+    // detailsQueue-only coalescing state
+    private var detailsInFlight = false
+    private var detailsPendingSessions: [Session]?
 
-    // workerQueue-only caches
+    // detailsQueue-only caches
     private var prCache: [String: (Date, PRInfo?)] = [:]
     private var branchCache: [String: (Date, String?)] = [:]
     private var diffCache: [String: (Date, GitDiff?)] = [:]
+    // workerQueue-only caches
     // ponytail: capture-pane is the hot subprocess; reuse each pane's verdict for a few seconds
     private var paneStatusCache: [String: (at: Double, status: AgentStatus, turnEnded: Bool)] = [:]
     private var agentWorked: Set<String> = []
+    // ponytail: ps dump reused for 4s; a freshly spawned wrapper-launched agent can
+    // read as plain "node" for up to that long
+    private var processSnapshotCache: (at: Double, children: [String: [(pid: String, name: String, args: String)]])?
 
     private let agentTools: Set<String> = ["claude", "pi", "opencode", "codex"]
     private let wrapperCommands: Set<String> = ["node", "bun", "sh"]
@@ -106,20 +124,24 @@ final class SessionStore: ObservableObject {
     // stays on refresh() so it keeps honoring the caches (no gh spam).
     func forceRefresh() {
         workerQueue.async { [weak self] in
+            self?.paneStatusCache.removeAll()
+        }
+        detailsQueue.async { [weak self] in
             guard let self else { return }
             self.prCache.removeAll()
             self.branchCache.removeAll()
             self.diffCache.removeAll()
-            self.paneStatusCache.removeAll()
         }
         refresh()
     }
 
     private func performRefreshPass() {
+        // one list-panes call feeds both the agent scan and the session list
+        let rows = queryPaneRows()
         // agents first: node-based agent CLIs (pi/opencode) must not count as dev servers
-        var snapshotAgents = queryAgents()
+        var snapshotAgents = queryAgents(rows: rows)
         // only real agents suppress the serving flag; server panes ARE the dev servers we want to flag
-        let snapshotSessions = querySessions(agentPanes: Set(snapshotAgents.filter { !$0.isServer }.map(\.paneId)))
+        let snapshotSessions = querySessions(rows: rows, agentPanes: Set(snapshotAgents.filter { !$0.isServer }.map(\.paneId)))
 
         // sort here with the fresh snapshot, not published `sessions` (main-owned, racy off-main)
         let sidebarRank = Dictionary(uniqueKeysWithValues: snapshotSessions.enumerated().map { ($0.element.name, $0.offset) })
@@ -133,15 +155,8 @@ final class SessionStore: ObservableObject {
             self.applySnapshot(sessions: snapshotSessions, details: self.details, agents: snapshotAgents)
         }
 
-        var snapshotDetails: [String: SessionDetails] = [:]
-
-        for session in snapshotSessions {
-            snapshotDetails[session.name] = queryDetails(for: session)
-        }
-
-        DispatchQueue.main.async { [weak self] in
-            self?.applySnapshot(sessions: snapshotSessions, details: snapshotDetails, agents: snapshotAgents)
-        }
+        // slow git/gh badge pass on its own queue: never blocks the next snapshot or a user action
+        scheduleDetailsPass(for: snapshotSessions)
 
         workerQueue.async { [weak self] in
             guard let self else { return }
@@ -151,6 +166,50 @@ final class SessionStore: ObservableObject {
                 return
             }
             self.refreshInFlight = false
+        }
+    }
+
+    // coalesced like refresh(): 2s ticks fold into one pending pass while gh is slow
+    private func scheduleDetailsPass(for sessions: [Session]) {
+        detailsQueue.async { [weak self] in
+            guard let self else { return }
+            if self.detailsInFlight {
+                self.detailsPendingSessions = sessions
+                return
+            }
+            self.detailsInFlight = true
+            self.performDetailsPass(sessions)
+        }
+    }
+
+    private func performDetailsPass(_ snapshotSessions: [Session]) {
+        for session in snapshotSessions {
+            let value = queryDetails(for: session)
+            // publish per session: a cold pass (force refresh) costs ~1s of gh per session,
+            // serially — one publish at loop end left every badge frozen until the last
+            // session finished, so ⇧⌘R looked like it did nothing
+            DispatchQueue.main.async { [weak self] in
+                self?.details[session.name] = value
+            }
+        }
+
+        // prune details of dead sessions
+        let live = Set(snapshotSessions.map(\.name))
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if self.details.keys.contains(where: { !live.contains($0) }) {
+                self.details = self.details.filter { live.contains($0.key) }
+            }
+        }
+
+        detailsQueue.async { [weak self] in
+            guard let self else { return }
+            if let pending = self.detailsPendingSessions {
+                self.detailsPendingSessions = nil
+                self.performDetailsPass(pending)
+                return
+            }
+            self.detailsInFlight = false
         }
     }
 
@@ -164,21 +223,28 @@ final class SessionStore: ObservableObject {
         let sessionNames = Set(nextSessions.map(\.name))
 
         // drop stored metadata for sessions that no longer exist (closed/killed).
+        // only prune names this app run actually saw alive: after a reboot the first
+        // refresh with any session would otherwise wipe entries for every session
+        // that hasn't been restored yet (non-empty list ≠ complete list).
         // skip when the list is empty: tmux server exits with its last session, so an
         // empty list means the server is down (reboot) or the query failed — pruning
         // then would wipe every group/color/lock/order entry.
+        seenLive.formUnion(sessionNames)
         if !nextSessions.isEmpty {
-            if colors.keys.contains(where: { !sessionNames.contains($0) }) {
-                colors = colors.filter { sessionNames.contains($0.key) }
+            let dead: (String) -> Bool = { [seenLive] in
+                !sessionNames.contains($0) && seenLive.contains($0)
+            }
+            if colors.keys.contains(where: dead) {
+                colors = colors.filter { !dead($0.key) }
                 saveColors()
             }
-            if locked.contains(where: { !sessionNames.contains($0) }) {
-                locked = locked.filter { sessionNames.contains($0) }
+            if locked.contains(where: dead) {
+                locked = locked.filter { !dead($0) }
                 Settings.locked = Array(locked)
             }
             // prune dead session tokens; divider tokens always survive
-            if orderTokens.contains(where: { Self.dividerId($0) == nil && !sessionNames.contains($0) }) {
-                orderTokens = orderTokens.filter { Self.dividerId($0) != nil || sessionNames.contains($0) }
+            if orderTokens.contains(where: { Self.dividerId($0) == nil && dead($0) }) {
+                orderTokens = orderTokens.filter { Self.dividerId($0) != nil || !dead($0) }
                 Settings.order = orderTokens
             }
         }
@@ -198,20 +264,34 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    private func querySessions(agentPanes: Set<String>) -> [Session] {
-        // list-panes so path comes from the FIRST pane (leftmost), not the active one
-        let out = Shell.tmux("list-panes", "-a", "-F", "#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{pane_current_path}") ?? ""
+    // one row per pane from the single shared list-panes snapshot
+    private struct PaneRow {
+        let session: String
+        let pane: String
+        let command: String   // lowercased
+        let activity: Double
+        let pid: String
+        let path: String
+        let title: String
+    }
 
-        let rows: [(name: String, pane: String, command: String, path: String)] = out
-            .split(whereSeparator: \.isNewline)
-            .compactMap { line in
-                let parts = line.split(separator: "\t", maxSplits: 3, omittingEmptySubsequences: false)
-                guard let first = parts.first, !first.isEmpty else { return nil }
-                return (String(first),
-                        parts.count > 1 ? String(parts[1]) : "",
-                        parts.count > 2 ? String(parts[2]).lowercased() : "",
-                        parts.count > 3 ? String(parts[3]) : "")
-            }
+    private func queryPaneRows() -> [PaneRow] {
+        // title last: pane titles can contain tabs; maxSplits keeps them whole
+        let format = "#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{window_activity}\t#{pane_pid}\t#{pane_current_path}\t#{pane_title}"
+        let out = Shell.tmux("list-panes", "-a", "-F", format) ?? ""
+        return out.split(whereSeparator: \.isNewline).compactMap { line in
+            let parts = line.split(separator: "\t", maxSplits: 6, omittingEmptySubsequences: false).map(String.init)
+            // Shell.run trims trailing whitespace from the whole output, so the LAST row
+            // loses its tab when the title is empty: 6 fields, not 7. Pad instead of dropping.
+            guard parts.count >= 6, !parts[0].isEmpty else { return nil }
+            let title = parts.count > 6 ? parts[6] : ""
+            return PaneRow(session: parts[0], pane: parts[1], command: parts[2].lowercased(),
+                           activity: Double(parts[3]) ?? 0, pid: parts[4], path: parts[5], title: title)
+        }
+    }
+
+    private func querySessions(rows: [PaneRow], agentPanes: Set<String>) -> [Session] {
+        // path comes from the FIRST pane (leftmost), not the active one
 
         // ponytail: "server" = any pane whose foreground command looks like a JS runtime/runner.
         // No port, no listen check; upgrade path is lsof -sTCP:LISTEN against pane pids.
@@ -219,12 +299,12 @@ final class SessionStore: ObservableObject {
         let serving = Set(rows.filter { row in
             !agentPanes.contains(row.pane) &&
                 (serverCommands.contains { row.command.hasPrefix($0) } || scriptShells.contains(row.command))
-        }.map(\.name))
+        }.map(\.session))
 
         var seen = Set<String>()
         var parsed: [Session] = rows.compactMap { row in
-            guard seen.insert(row.name).inserted else { return nil }
-            return Session(name: row.name, path: row.path, serving: serving.contains(row.name))
+            guard seen.insert(row.session).inserted else { return nil }
+            return Session(name: row.session, path: row.path, serving: serving.contains(row.session))
         }
 
         let manualOrder = Settings.order
@@ -313,26 +393,16 @@ final class SessionStore: ObservableObject {
 
     // MARK: - Agent scan
 
-    private func queryAgents() -> [AgentInfo] {
-        let format = "#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{window_activity}\t#{pane_pid}\t#{pane_title}"
-        let out = Shell.tmux("list-panes", "-a", "-F", format) ?? ""
-
-        let rows: [(session: String, pane: String, command: String, activity: Double, pid: String, title: String)] =
-            out.split(whereSeparator: \.isNewline).compactMap { line in
-                let parts = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
-                guard parts.count >= 6 else { return nil }
-                return (parts[0], parts[1], parts[2].lowercased(), Double(parts[3]) ?? 0, parts[4], parts[5])
-            }
-
+    private func queryAgents(rows: [PaneRow]) -> [AgentInfo] {
         if rows.isEmpty {
             agentWorked.removeAll()
             paneStatusCache.removeAll()
             return []
         }
 
-        let needsProcessSnapshot = rows.contains { wrapperCommands.contains($0.command) }
-        let childrenByPpid = needsProcessSnapshot ? processSnapshot() : [:]
         let now = Date().timeIntervalSince1970
+        let needsProcessSnapshot = rows.contains { wrapperCommands.contains($0.command) }
+        let childrenByPpid = needsProcessSnapshot ? cachedProcessSnapshot(now: now) : [:]
 
         var found: [AgentInfo] = []
         found.reserveCapacity(rows.count)
@@ -402,6 +472,16 @@ final class SessionStore: ObservableObject {
         return nil
     }
 
+    // full ps dump costs real CPU every 2s pass; reuse for 4s (same lag class as paneStatusCache)
+    private func cachedProcessSnapshot(now: Double) -> [String: [(pid: String, name: String, args: String)]] {
+        if let cached = processSnapshotCache, now - cached.at < 4 {
+            return cached.children
+        }
+        let children = processSnapshot()
+        processSnapshotCache = (now, children)
+        return children
+    }
+
     // one ps pass grouped by ppid, so wrapper resolution is a dictionary walk, not repeated array scans
     private func processSnapshot() -> [String: [(pid: String, name: String, args: String)]] {
         let out = Shell.run("/bin/ps", ["-axo", "pid=,ppid=,args="]) ?? ""
@@ -423,8 +503,12 @@ final class SessionStore: ObservableObject {
 
     private func classifyAgentStatus(pane: String, title: String, activity: Double, now: Double) -> AgentStatus {
         // claude publishes state via OSC title (tmux tracks it as pane_title):
-        // braille spinner U+2800-28FF = working, "✳" = turn finished
-        let spinner = title.unicodeScalars.first.map { (0x2800...0x28FF).contains($0.value) } ?? false
+        // spinner glyph = working — braille U+2800-28FF (≤2.1.22x) or ◐◑◒◓ U+25D0-25D3 (2.1.235).
+        // 2.1.241 dropped the title spinner entirely: title stays "✳ <topic>" even mid-turn,
+        // so "✳" no longer means finished — only the footer's live counter distinguishes.
+        let spinner = title.unicodeScalars.first.map {
+            (0x2800...0x28FF).contains($0.value) || (0x25D0...0x25D3).contains($0.value)
+        } ?? false
 
         // ponytail: throttle capture-pane to once per 4s per pane; status can lag up to 4s.
         // The title spinner is live truth and costs no subprocess (pane_title comes with
@@ -446,17 +530,24 @@ final class SessionStore: ObservableObject {
         // from a live counter ("Spelunking… (3m · ↓ 10k tokens)") to a finished-turn summary
         // ("Worked for 3m 21s · 1 shell still running") and is the only signal that still flips
         let turnEnded = footer.contains("still running")
+        // live-counter footer: "✻ Finagling… (6m 6s · ↓ 21.0k tokens · thinking)". The "… ("
+        // + "tokens" pair only appears in the counter, never in transcript prose; older builds
+        // print "esc to interrupt" instead. Waiting on a backgrounded subagent shows neither —
+        // its footer is "✻ Waiting for N background agents to finish" (still a working turn).
+        let busyFooter = workingPrompts.contains(where: { footer.contains($0) })
+            || (footer.contains("… (") && footer.contains(" tokens"))
+            || footer.contains("background agent")
 
         let status: AgentStatus
         if blockedPrompts.contains(where: { region.contains($0) }) {
             status = .blocked
-        } else if spinner && !turnEnded {
+        } else if (spinner || busyFooter) && !turnEnded {
             agentWorked.insert(pane)
             status = .working
         } else if title.hasPrefix("✳") || spinner {
             status = agentWorked.contains(pane) ? .done : .idle
-        } else if !turnEnded && ((now - activity) < 2.5 || workingPrompts.contains(where: { footer.contains($0) })) {
-            // no title signal (codex/opencode/cursor): activity + busy-footer fallback
+        } else if !turnEnded && (now - activity) < 2.5 {
+            // no title signal (codex/opencode/cursor): pane-activity fallback
             agentWorked.insert(pane)
             status = .working
         } else {
@@ -494,7 +585,7 @@ final class SessionStore: ObservableObject {
 
     func newSession() {
         let current = selected
-        workerQueue.async { [weak self] in
+        actionQueue.async { [weak self] in
             guard let self else { return }
             // new session starts in the selected session's active pane cwd (home if none)
             let cwd = current.flatMap {
@@ -517,7 +608,7 @@ final class SessionStore: ObservableObject {
     // split the selected session's active window horizontally (new pane on the right)
     func splitPaneRight() {
         guard let selected else { return }
-        workerQueue.async { [weak self] in
+        actionQueue.async { [weak self] in
             guard let self else { return }
             // split-window wants a pane target; "=name:" = exact session, active window
             // -c expands relative to the target pane, so new pane inherits its cwd
@@ -529,7 +620,7 @@ final class SessionStore: ObservableObject {
     // split the selected session's active window vertically (new pane below)
     func splitPaneDown() {
         guard let selected else { return }
-        workerQueue.async { [weak self] in
+        actionQueue.async { [weak self] in
             guard let self else { return }
             _ = Shell.tmux("split-window", "-v", "-t", "=" + selected + ":", "-c", "#{pane_current_path}")
             self.refresh()
@@ -539,7 +630,7 @@ final class SessionStore: ObservableObject {
     // kill the selected session's active pane; tmux kills the session when the last pane dies
     func closeActivePane() {
         guard let selected, !locked.contains(selected) else { return }
-        workerQueue.async { [weak self] in
+        actionQueue.async { [weak self] in
             guard let self else { return }
             let paneCount = Shell.tmux("list-panes", "-t", "=" + selected)?
                 .split(separator: "\n").count ?? 0
@@ -566,7 +657,7 @@ final class SessionStore: ObservableObject {
         let next = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !next.isEmpty, next != old else { return }
 
-        workerQueue.async { [weak self] in
+        actionQueue.async { [weak self] in
             guard let self else { return }
             guard Shell.tmux("rename-session", "-t", "=" + old, next) != nil else {
                 self.refresh()
@@ -599,7 +690,7 @@ final class SessionStore: ObservableObject {
 
     func kill(_ sessionName: String) {
         guard !locked.contains(sessionName) else { return }
-        workerQueue.async { [weak self] in
+        actionQueue.async { [weak self] in
             guard let self else { return }
             _ = Shell.tmux("kill-session", "-t", "=" + sessionName)
             self.refresh()

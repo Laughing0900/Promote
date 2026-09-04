@@ -53,10 +53,9 @@ final class DroppableTerminalView: LocalProcessTerminalView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         registerForDraggedTypes([.fileURL])
-        // SwiftTerm defaults to .hoverWithModifier (⌘-click). Plain click instead:
-        // ponytail: also makes implicit path-like words clickable, so a click that
-        // lands on one is swallowed instead of reaching a mouse-reporting TUI/tmux.
-        linkHighlightMode = .hover
+        // ⌘-click opens links (SwiftTerm default); plain click is left to the TUI/tmux
+        // mouse reporting. Underline shows on hover only while ⌘ is held.
+        linkHighlightMode = .hoverWithModifier
         linkRouter.term = self
         terminalDelegate = linkRouter
     }

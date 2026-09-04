@@ -47,7 +47,10 @@ struct RootView: View {
             }
             // local monitor: terminal NSView owns key focus, SwiftUI modifiers don't fire
             flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
-                store.cmdHeld = event.modifierFlags.contains(.command)
+                // fires for every modifier (shift/opt/ctrl too); publishing an unchanged
+                // value still invalidates the whole view tree, so guard real ⌘ transitions
+                let held = event.modifierFlags.contains(.command)
+                if store.cmdHeld != held { store.cmdHeld = held }
                 return event
             }
         }
