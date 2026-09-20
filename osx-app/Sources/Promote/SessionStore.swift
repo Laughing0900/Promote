@@ -583,12 +583,30 @@ final class SessionStore: ObservableObject {
 
     // MARK: - User actions
 
+    // Finder can supply multiple URLs; only existing local directories create sessions.
+    // tmux assigns unique names, just like ⌘N, so repeated drops never collide.
+    @discardableResult
+    func openDirectories(_ urls: [URL]) -> Bool {
+        let directories = urls.filter {
+            $0.isFileURL && (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        }
+        guard !directories.isEmpty else { return false }
+        for directory in directories {
+            newSession(in: directory.path)
+        }
+        return true
+    }
+
     func newSession() {
+        newSession(in: nil)
+    }
+
+    private func newSession(in directory: String?) {
         let current = selected
         actionQueue.async { [weak self] in
             guard let self else { return }
-            // new session starts in the selected session's active pane cwd (home if none)
-            let cwd = current.flatMap {
+            // Explicit directory for Finder drops; otherwise inherit the active pane cwd.
+            let cwd = directory ?? current.flatMap {
                 Shell.tmux("display-message", "-p", "-t", "=" + $0 + ":", "#{pane_current_path}")
             } ?? NSHomeDirectory()
             let created = Shell.tmux("new-session", "-d", "-c", cwd, "-P", "-F", "#S")

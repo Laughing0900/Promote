@@ -37,6 +37,7 @@ Promote sits on top of your normal tmux — nothing is hidden or replaced:
 - **Your existing sessions just appear.** Anything you start from a terminal (`tmux new -s foo`) shows up in the sidebar within a couple of seconds, and stays in sync as sessions come and go.
 - **Nothing stops when you leave.** Selecting a session attaches to it; switching away or quitting the app leaves it running. You can also attach to the same session from a regular terminal at the same time.
 - **Manage sessions without the command line.** Create (⌘N), rename, split panes, and kill sessions straight from the app — new sessions and splits open in the current directory.
+- **Drop a Finder folder anywhere in the app content** to create and select a new tmux session starting in that directory. Drop multiple folders to open one session per folder (the last one is selected). Regular files dropped onto the terminal still paste shell-escaped paths; mixed folder/file drops open only the folders. This uses the existing directory — it doesn't create a Git branch or worktree.
 - **Empty sidebar?** tmux isn't running any sessions. Hit ⌘N to start one. Your colors, groups, and ordering are remembered and come back with the sessions.
 
 ## Sidebar session display

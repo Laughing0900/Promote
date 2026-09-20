@@ -21,6 +21,10 @@ struct RootView: View {
         }
         .ignoresSafeArea(edges: .bottom)
         .toolbarBackground(.hidden, for: .windowToolbar)
+        // Covers the sidebar and empty detail; the AppKit terminal handles its own drops.
+        .dropDestination(for: URL.self) { urls, _ in
+            store.openDirectories(urls)
+        }
         .overlay {
             if store.showCheatSheet {
                 CheatSheetView { store.showCheatSheet = false }
@@ -108,7 +112,7 @@ private struct DetailPane: View {
 
     @ViewBuilder
     private func activeSessionView(_ session: Session) -> some View {
-        TerminalPane(session: session.name)
+        TerminalPane(session: session.name, openDirectories: store.openDirectories)
             .id("\(session.name)#\(store.terminalEpoch)")
     }
 }
@@ -120,7 +124,7 @@ private struct EmptyDetailState: View {
         VStack(spacing: 16) {
             Text("No session selected")
                 .font(.title3.bold())
-            Text("Create a tmux session or pick one from the sidebar.")
+            Text("Drop a folder here, create a tmux session, or pick one from the sidebar.")
                 .foregroundStyle(.secondary)
             Button("New Session", action: newSession)
                 .buttonStyle(.borderedProminent)

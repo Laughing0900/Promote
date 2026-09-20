@@ -46,9 +46,10 @@ final class TerminalLinkRouter: TerminalViewDelegate {
     func rangeChanged(source: TerminalView, startY: Int, endY: Int) { term?.rangeChanged(source: source, startY: startY, endY: endY) }
 }
 
-// SwiftTerm has no drop support; register for file drops and paste shell-escaped paths
+// SwiftTerm has no drop support; folders open sessions, files paste shell-escaped paths.
 final class DroppableTerminalView: LocalProcessTerminalView {
     let linkRouter = TerminalLinkRouter()
+    var openDirectories: (([URL]) -> Bool)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -65,8 +66,12 @@ final class DroppableTerminalView: LocalProcessTerminalView {
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { .copy }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self]) as? [URL] ?? []
+        let urls = sender.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL] ?? []
         guard !urls.isEmpty else { return false }
+        // For a mixed drop, open folders without also typing into the old session.
+        if openDirectories?(urls) == true { return true }
         let text = urls.map { "'" + $0.path.replacingOccurrences(of: "'", with: "'\\''") + "' " }.joined()
         send(txt: text)
         return true
@@ -76,6 +81,7 @@ final class DroppableTerminalView: LocalProcessTerminalView {
 // SwiftTerm wrapper that attaches to one tmux session
 struct TerminalPane: NSViewRepresentable {
     let session: String
+    let openDirectories: ([URL]) -> Bool
     @AppStorage(Settings.fontSizeKey) private var fontSize = 13.0
 
     func makeNSView(context: Context) -> DroppableTerminalView {
@@ -96,6 +102,7 @@ struct TerminalPane: NSViewRepresentable {
         )
 
         term.linkRouter.session = session
+        term.openDirectories = openDirectories
         return term
     }
 
@@ -114,6 +121,7 @@ struct TerminalPane: NSViewRepresentable {
     }
 
     func updateNSView(_ view: DroppableTerminalView, context: Context) {
+        view.openDirectories = openDirectories
         let currentSize = view.font.pointSize
         if abs(currentSize - fontSize) > 0.001 {
             view.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
