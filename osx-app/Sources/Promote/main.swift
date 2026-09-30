@@ -221,5 +221,7 @@ struct PromoteApp: App {
 NSApplication.shared.setActivationPolicy(.regular)
 // ponytail: force dark — terminal is dark-only, light-mode sidebar clashes; theme both if light mode ever matters
 NSApp.appearance = NSAppearance(named: .darkAqua)
+// AppKit window tabbing would inject File > New Tab (⌘T), shadowing the grid's New Tab
+NSWindow.allowsAutomaticWindowTabbing = false
 NSApplication.shared.activate(ignoringOtherApps: true)
 PromoteApp.main()

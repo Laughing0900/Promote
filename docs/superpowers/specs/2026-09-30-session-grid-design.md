@@ -83,8 +83,12 @@ Reconciliation, inside `applySnapshot` on main, per gid in `groupOf ∪ layouts.
 
 - Snapshot `groupOf` is merged with `pendingTags` (pending wins) before anything else.
 - `members` = live sessions tagged with gid ∪ pending names for gid.
-- `prunable` = tree names in `seenLive` and not in `pendingTags` (mirrors the existing
-  reboot-safe pruning: never prune a name that was never seen alive this run).
+- `prunable` = tree names in `seenLive` (for the first 3 reconciled snapshots — reboot-safe),
+  then every tree name; always plus `pendingKills`, minus `pendingTags`.
+- `pendingTags` entries expire after 5s if the name never shows up live (killed or exited
+  before its tag was confirmed). `kill()` clears the entry and adds the name to
+  `pendingKills`, which is excluded from `members` until a snapshot no longer lists it live.
+- `untag` re-checks on main before running, so a split queued ahead of it wins.
 - Result `nil` → delete layout; if exactly one live member still carries the tag, clear it
   (`set-option -u -t =name: @promote-group`, on `actionQueue`) so it is solo again.
 - A pending name that the snapshot shows tagged with its gid is removed from `pendingTags`.
@@ -170,7 +174,8 @@ Same convention as the app: shell failures return nil, never throw. Failed actio
 their optimistic layout change. Reconciliation is the safety net — the layout always
 converges to tmux truth within one refresh (2s). Manual `set-option @promote-group` edits from a
 terminal are picked up the same way. A tmux server restart drops all tags → everything goes
-solo; layouts for sessions never seen alive this run are not pruned.
+solo; layouts are pruned only for seen-alive names until 3 snapshots have landed, then for
+any non-live name (covers members killed while the app was closed).
 
 ## Testing
 

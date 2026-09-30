@@ -35,9 +35,9 @@ All code in `Sources/Promote/`, one file per concern:
 
 Timer (2s) → `store.refresh()` → `tmux list-panes -a -F "#{session_name}\t#{pane_current_path}"` builds the session list (first pane per session = leftmost pane wins, so splits don't change the sidebar path) → per session, `fetchDetails` on a private serial queue runs `git branch --show-current` and `gh pr view` (cached 60s per path in `prCache`) → publishes to `details` on main. Don't use `#{session_path}` — it's the stale session start dir.
 
-Session groups: membership is the tmux session option `@promote-group <gid>` (read as a column of the same `list-panes -a` call); the arrangement is `layouts[gid]` in UserDefaults (`gridLayouts`). `reconcileGroups` converges layouts onto tags every refresh; in-flight tag writes live in `pendingTags`. ⌘\ / ⇧⌘\ / ⌘T create a new tagged session in the focused cwd. Option commands need `-t =name:` (trailing colon).
+Session groups: membership is the tmux session option `@promote-group <gid>` (read as a column of the same `list-panes -a` call); the arrangement is `layouts[gid]` in UserDefaults (`gridLayouts`). `reconcileGroups` converges layouts onto tags every refresh; in-flight tag writes live in `pendingTags` (expire after 5s if never live), just-killed members in `pendingKills` (never re-added from a stale snapshot). Layout names are prunable once seen alive this run, or for any non-live name after 3 reconciled snapshots. ⌘\ / ⇧⌘\ / ⌘T create a new tagged session in the focused cwd. Option commands need `-t =name:` (trailing colon).
 
-Per-session metadata (colors, groups, manual sort order, font size) persists in `UserDefaults`, keyed by session *name* — renames must migrate all three (see `rename()`).
+Per-session metadata (colors, groups, manual sort order, font size) persists in `UserDefaults`, keyed by session *name* — renames must migrate them all, including grid layouts (see `rename()`).
 
 Concurrency model: `prCache` is touched only on `detailsQueue` (serial queue instead of a lock); `@Published` mutations only on main.
 
