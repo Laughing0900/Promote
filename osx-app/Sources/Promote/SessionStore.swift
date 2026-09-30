@@ -7,7 +7,11 @@ final class SessionStore: ObservableObject {
     @Published private(set) var sessions: [Session] = []
     @Published var selected: String? {
         // any selection path (sidebar, ⌘1–9, terminal click) shows that tab in its grid leaf
-        didSet { if let selected, selected != oldValue { activateTab(selected) } }
+        didSet {
+            guard let selected, selected != oldValue else { return }
+            activateTab(selected)
+            if let gid = layoutGroup(containing: selected) { lastFocused[gid] = selected }
+        }
     }
     @Published private(set) var details: [String: SessionDetails] = [:]
     @Published var colors: [String: String] = Settings.colors
@@ -53,6 +57,8 @@ final class SessionStore: ObservableObject {
     // main-only: snapshots reconciled this run. Early ones may be partial (reboot restore),
     // so only seen-alive names are prunable until a few have landed.
     private var reconciledSnapshots = 0
+    // main-only: gid -> member last focused, so clicking the group's sidebar row reopens it
+    private var lastFocused: [String: String] = [:]
     // detailsQueue-only coalescing state
     private var detailsInFlight = false
     private var detailsPendingSessions: [Session]?
@@ -97,17 +103,79 @@ final class SessionStore: ObservableObject {
         for token in orderTokens {
             if let id = Self.dividerId(token) {
                 items.append(.divider(id: id, title: dividerTitles[id] ?? ""))
-            } else if let session = live[token], seen.insert(token).inserted {
+            } else if let session = live[token], isGroupRow(session.name), seen.insert(token).inserted {
                 items.append(.session(session))
             }
         }
-        for session in sessions where !seen.contains(session.name) {
+        for session in sessions where !seen.contains(session.name) && isGroupRow(session.name) {
             items.append(.session(session))
         }
         return items
     }
 
-    var hotkeyOrderedSessions: [Session] { sessions }
+    // visible rows only: one number per group
+    var hotkeyOrderedSessions: [Session] {
+        sidebarItems.compactMap { if case .session(let s) = $0 { return s } else { return nil } }
+    }
+
+    // MARK: - Group rows (one sidebar row per session group)
+
+    // grid members in sidebar order; [name] for a solo session
+    func groupMembers(of name: String) -> [String] {
+        guard let gid = layoutGroup(containing: name), let layout = layouts[gid] else { return [name] }
+        let inTree = Set(layout.allSessions)
+        let ordered = sessions.map(\.name).filter { inTree.contains($0) }
+        return ordered.isEmpty ? [name] : ordered
+    }
+
+    // a group shows as the row of its first member in sidebar order
+    func groupRow(of name: String) -> String { groupMembers(of: name).first ?? name }
+
+    private func isGroupRow(_ name: String) -> Bool { groupRow(of: name) == name }
+
+    // sidebar row click / ⌘1–9: a group row reopens the member last focused in it
+    func selectRow(_ name: String) {
+        if let gid = layoutGroup(containing: name), let last = lastFocused[gid],
+           layouts[gid]?.contains(last) == true {
+            selected = last
+        } else {
+            selected = name
+        }
+    }
+
+    // List selection binding: highlight the group row whichever member is focused
+    var rowSelection: Binding<String?> {
+        Binding(
+            get: { self.selected.map(self.groupRow(of:)) },
+            set: { name in
+                guard let name else { return }
+                if self.selected.map(self.groupRow(of:)) != name { self.selectRow(name) }
+            }
+        )
+    }
+
+    // worst status across the group's members: blocked > working > done > idle
+    func groupAgentStatus(for name: String) -> AgentStatus? {
+        let statuses = Set(groupMembers(of: name).compactMap(agentStatus(for:)))
+        for status in [AgentStatus.blocked, .working, .done, .idle] where statuses.contains(status) {
+            return status
+        }
+        return nil
+    }
+
+    // sidebar Kill / bin on a group row kills every unlocked member
+    func killRow(_ name: String) {
+        for member in groupMembers(of: name) { kill(member) }
+    }
+
+    // drag a tab into the leaf showing `target`
+    func moveTab(_ name: String, toLeafOf target: String) {
+        guard let gid = layoutGroup(containing: target), let layout = layouts[gid], layout.contains(name) else { return }
+        let next = layout.moving(name, toLeafOf: target)
+        guard next != layout else { return }
+        setLayout(next, for: gid)
+        selected = name
+    }
 
     func details(for sessionName: String) -> SessionDetails {
         details[sessionName] ?? SessionDetails()
@@ -718,7 +786,7 @@ final class SessionStore: ObservableObject {
 
     // new member's sidebar row sits right after the session it was split from
     private func insertOrderToken(_ name: String, after anchor: String) {
-        var tokens = canonicalTokens().filter { $0 != name }
+        var tokens = expandingGroups(canonicalTokens()).filter { $0 != name }
         let at = tokens.firstIndex(of: anchor).map { $0 + 1 } ?? tokens.count
         tokens.insert(name, at: at)
         orderTokens = tokens
@@ -876,13 +944,21 @@ final class SessionStore: ObservableObject {
         sidebarItems.map(\.token)
     }
 
+    // visible tokens -> persisted order: hidden group members ride right after their row,
+    // so moving a group row moves the whole group and the row stays the group's first member
+    private func expandingGroups(_ tokens: [String]) -> [String] {
+        tokens.flatMap { token in
+            Self.dividerId(token) == nil ? groupMembers(of: token) : [token]
+        }
+    }
+
     func addDivider(after sessionName: String) {
         var tokens = canonicalTokens()
         let token = Self.dividerPrefix + UUID().uuidString
         let at = tokens.firstIndex(of: sessionName).map { $0 + 1 } ?? tokens.count
         tokens.insert(token, at: at)
-        orderTokens = tokens
-        Settings.order = tokens
+        orderTokens = expandingGroups(tokens)
+        Settings.order = orderTokens
     }
 
     func removeDivider(_ id: String) {
@@ -913,11 +989,11 @@ final class SessionStore: ObservableObject {
         if from < insertAt { insertAt -= 1 }
         tokens.insert(token, at: min(insertAt, tokens.count))
 
-        orderTokens = tokens
-        Settings.order = tokens
+        orderTokens = expandingGroups(tokens)
+        Settings.order = orderTokens
 
         // resort published sessions to match
-        let rank = Dictionary(uniqueKeysWithValues: tokens.enumerated().map { ($0.element, $0.offset) })
+        let rank = Dictionary(uniqueKeysWithValues: orderTokens.enumerated().map { ($0.element, $0.offset) })
         sessions = sessions.sorted { (rank[$0.name] ?? .max) < (rank[$1.name] ?? .max) }
     }
 
@@ -949,7 +1025,7 @@ final class SessionStore: ObservableObject {
     func jumpToHotkeyIndex(_ index: Int) {
         let ordered = hotkeyOrderedSessions
         guard index > 0, index <= ordered.count else { return }
-        selected = ordered[index - 1].name
+        selectRow(ordered[index - 1].name)
     }
 
     // MARK: - Session grid

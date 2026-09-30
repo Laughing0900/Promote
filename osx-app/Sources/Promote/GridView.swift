@@ -50,6 +50,11 @@ private struct TabStrip: View {
     let tabs: [String]
     let active: String
     let focused: Bool
+    @State private var dropTargeted = false
+
+    // ponytail: "§tab:" payload prefix keeps a tab drag from being read as a sidebar order
+    // token (sidebar onInsert / bin also accept plain text). Can't collide with a sane session name.
+    static let dragPrefix = "§tab:"
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -61,7 +66,17 @@ private struct TabStrip: View {
             .padding(.horizontal, 4)
         }
         .frame(height: 26)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(dropTargeted ? Color.accentColor.opacity(0.25) : Color(nsColor: .windowBackgroundColor))
+        // drop a tab from another cell here: it moves into this cell
+        .onDrop(of: [.utf8PlainText, .plainText], isTargeted: $dropTargeted) { providers in
+            guard let provider = providers.first else { return false }
+            provider.loadObject(ofClass: NSString.self) { object, _ in
+                guard let payload = object as? String, payload.hasPrefix(Self.dragPrefix) else { return }
+                let name = String(payload.dropFirst(Self.dragPrefix.count))
+                DispatchQueue.main.async { store.moveTab(name, toLeafOf: active) }
+            }
+            return true
+        }
         .overlay(alignment: .top) {
             // focused leaf marker
             Rectangle().fill(focused ? Color.accentColor : .clear).frame(height: 2)
@@ -90,7 +105,10 @@ private struct TabStrip: View {
         .padding(.vertical, 3)
         .background(isActive ? Color.primary.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 5))
         .contentShape(Rectangle())
-        .onTapGesture { store.selected = name }
+        // simultaneousGesture, not onTapGesture: an exclusive tap swallows the mouse-down
+        // and .onDrag never starts
+        .simultaneousGesture(TapGesture().onEnded { store.selected = name })
+        .onDrag { NSItemProvider(object: (Self.dragPrefix + name) as NSString) }
     }
 }
 

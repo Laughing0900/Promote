@@ -62,6 +62,13 @@ indirect enum LayoutNode: Codable, Equatable {
         }
     }
 
+    // drag a tab into the leaf holding `target`; an emptied source leaf collapses
+    func moving(_ name: String, toLeafOf target: String) -> LayoutNode {
+        guard name != target, contains(name), let targetTabs = leafTabs(containing: target),
+              !targetTabs.contains(name), let rest = removing(name) else { return self }
+        return rest.insertTab(name, into: target)
+    }
+
     func renaming(_ old: String, to new: String) -> LayoutNode {
         switch self {
         case .leaf(let tabs, let active):

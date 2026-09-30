@@ -54,15 +54,16 @@ struct SidebarView: View {
             if !focused, let id = editingDivider { commitDividerTitle(id) }
         }
         .confirmationDialog(
-            "Kill session \u{201C}\(pendingDelete ?? "")\u{201D}?",
+            killPrompt(pendingDelete ?? ""),
             isPresented: Binding(
                 get: { pendingDelete != nil },
                 set: { if !$0 { pendingDelete = nil } }
             )
         ) {
-            Button("Kill Session", role: .destructive) {
+            Button(store.groupMembers(of: pendingDelete ?? "").count > 1 ? "Kill Group" : "Kill Session",
+                   role: .destructive) {
                 if let pendingDelete {
-                    store.kill(pendingDelete)
+                    store.killRow(pendingDelete)
                 }
                 self.pendingDelete = nil
             }
@@ -96,10 +97,19 @@ struct SidebarView: View {
             }
     }
 
+    private func killPrompt(_ name: String) -> String {
+        let members = store.groupMembers(of: name)
+        return members.count > 1
+            ? "Kill group \u{201C}\(name)\u{201D} and all \(members.count) sessions?"
+            : "Kill session \u{201C}\(name)\u{201D}?"
+    }
+
     private func discard(_ token: String) {
         dragging = false
         if let id = SessionStore.dividerId(token) {
             store.removeDivider(id)
+        } else if store.groupMembers(of: token).count > 1 {
+            pendingDelete = token   // a whole group is too much to kill on a drop; confirm
         } else {
             store.kill(token)   // no-ops on locked sessions
         }
@@ -123,7 +133,7 @@ struct SidebarView: View {
         let items = store.sidebarItems
 
         // min row height 1: rows size to content; no forced 24px spacer rows
-        return List(selection: $store.selected) {
+        return List(selection: store.rowSelection) {
             // zero-height dummy row soaks up the List's first-row top inset,
             // so the real first row sits at normal inter-row spacing
             Color.clear
@@ -217,8 +227,9 @@ struct SidebarView: View {
     @ViewBuilder
     private func sessionRow(_ session: Session) -> some View {
         let details = store.details(for: session.name)
-        let isSelected = store.selected == session.name
+        let isSelected = store.selected.map(store.groupRow(of:)) == session.name
         let agentStatus = summarizedAgentStatus(for: session.name)
+        let extraMembers = store.groupMembers(of: session.name).count - 1
 
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 3) {
@@ -252,6 +263,16 @@ struct SidebarView: View {
                                     ? Color.accentColor
                                     : Color.primary
                             )
+
+                        // session group: other members live as tabs in this row's grid
+                        if extraMembers > 0 {
+                            Text(verbatim: "+\(extraMembers)")
+                                .font(.caption.monospacedDigit().weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 4)
+                                .background(Color.primary.opacity(0.1), in: Capsule())
+                                .help(store.groupMembers(of: session.name).dropFirst().joined(separator: ", "))
+                        }
                     }
                 }
 
@@ -359,7 +380,7 @@ struct SidebarView: View {
             beginRename(session)
         })
         .simultaneousGesture(TapGesture().onEnded {
-            store.selected = session.name
+            store.selectRow(session.name)
         })
     }
 
@@ -489,7 +510,8 @@ struct SidebarView: View {
             store.setLocked(session.name, !isLocked)
         }
 
-        Button("Kill Session", role: .destructive) {
+        let groupSize = store.groupMembers(of: session.name).count
+        Button(groupSize > 1 ? "Kill Group (\(groupSize) Sessions)" : "Kill Session", role: .destructive) {
             pendingDelete = session.name
         }
         .disabled(isLocked)
@@ -581,7 +603,7 @@ struct SidebarView: View {
     }
 
     private func summarizedAgentStatus(for sessionName: String) -> AgentStatus? {
-        store.agentStatus(for: sessionName)
+        store.groupAgentStatus(for: sessionName)
     }
 
     private func commitRename(old: String) {

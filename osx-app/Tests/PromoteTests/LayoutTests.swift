@@ -99,4 +99,20 @@ private func leaf(_ tabs: String..., active: Int = 0) -> LayoutNode { .leaf(tabs
         #expect(LayoutNode.nextFreeName(base: "v2-nft", taken: ["v2-nft"]) == "v2-nft-2")
         #expect(LayoutNode.nextFreeName(base: "-3", taken: []) == "-3-2")
     }
+
+    @Test func movingTabToAnotherLeaf() {
+        let t = LayoutNode.split(axis: .horizontal, ratio: 0.5, first: leaf("a"), second: leaf("b", "c"))
+        // source leaf keeps its other tab
+        #expect(t.moving("c", toLeafOf: "a")
+                == .split(axis: .horizontal, ratio: 0.5, first: leaf("a", "c", active: 1), second: leaf("b")))
+        // source leaf emptied → split collapses
+        #expect(t.moving("a", toLeafOf: "b") == leaf("b", "c", "a", active: 2))
+    }
+
+    @Test func movingWithinSameLeafOrUnknownIsNoOp() {
+        let t = LayoutNode.split(axis: .horizontal, ratio: 0.5, first: leaf("a"), second: leaf("b", "c"))
+        #expect(t.moving("c", toLeafOf: "b") == t)
+        #expect(t.moving("x", toLeafOf: "a") == t)
+        #expect(t.moving("a", toLeafOf: "x") == t)
+    }
 }
