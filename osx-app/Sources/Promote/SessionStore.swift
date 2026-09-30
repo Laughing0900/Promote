@@ -45,6 +45,14 @@ final class SessionStore: ObservableObject {
     // main-only: name -> gid for tag writes still in flight (new member, and the focused
     // session on a group's first split). Counts as a member, never pruned.
     private var pendingTags: [String: String] = [:]
+    // main-only: when each pendingTags entry was made. A pending name that never shows up
+    // live (killed or exited before its tag was confirmed) expires instead of pinning a dead cell.
+    private var pendingSince: [String: Date] = [:]
+    // main-only: grid members killed but maybe still in an in-flight snapshot; never re-added
+    private var pendingKills: Set<String> = []
+    // main-only: snapshots reconciled this run. Early ones may be partial (reboot restore),
+    // so only seen-alive names are prunable until a few have landed.
+    private var reconciledSnapshots = 0
     // detailsQueue-only coalescing state
     private var detailsInFlight = false
     private var detailsPendingSessions: [Session]?
@@ -680,8 +688,12 @@ final class SessionStore: ObservableObject {
                 case .tab: next = base.insertTab(name, into: focused)
                 }
                 self.setLayout(next, for: gid)
+                // focused is always pending too: a lone-survivor untag queued just before this
+                // split must not dissolve the group we're growing
                 self.pendingTags[name] = gid
-                if !focusedWasTagged { self.pendingTags[focused] = gid }
+                self.pendingTags[focused] = gid
+                self.pendingSince[name] = Date()
+                self.pendingSince[focused] = Date()
                 if !self.sessions.contains(where: { $0.name == name }) {
                     self.sessions.append(Session(name: name, path: cwd))
                 }
@@ -803,7 +815,10 @@ final class SessionStore: ObservableObject {
                     self.layouts = self.layouts.mapValues { $0.renaming(old, to: next) }
                     Settings.layouts = self.layouts
                 }
-                if let gid = self.pendingTags.removeValue(forKey: old) { self.pendingTags[next] = gid }
+                if let gid = self.pendingTags.removeValue(forKey: old) {
+                    self.pendingTags[next] = gid
+                    self.pendingSince[next] = self.pendingSince.removeValue(forKey: old)
+                }
                 if let gid = self.groupOf.removeValue(forKey: old) { self.groupOf[next] = gid }
 
                 if self.selected == old {
@@ -819,7 +834,10 @@ final class SessionStore: ObservableObject {
         guard !locked.contains(sessionName) else { return }
         // grid member: drop its cell now and hand focus to a neighbor. Only here, so a
         // cancelled confirm dialog never moves focus.
+        pendingTags.removeValue(forKey: sessionName)
+        pendingSince.removeValue(forKey: sessionName)
         if let gid = layoutGroup(containing: sessionName), let layout = layouts[gid] {
+            pendingKills.insert(sessionName)
             let rest = layout.removing(sessionName)
             let tabs = layout.leafTabs(containing: sessionName) ?? []
             let neighbor = tabs.firstIndex(of: sessionName).flatMap { i -> String? in
@@ -953,20 +971,29 @@ final class SessionStore: ObservableObject {
 
     // main-only: converge layouts onto the tmux tags from this snapshot
     private func reconcileGroups(_ snapshot: [String: String], live: Set<String>) {
-        for (name, gid) in pendingTags where snapshot[name] == gid {
+        let now = Date()
+        for (name, gid) in pendingTags where snapshot[name] == gid
+            || (!live.isEmpty && !live.contains(name) && now.timeIntervalSince(pendingSince[name] ?? .distantPast) > 5) {
             pendingTags.removeValue(forKey: name)
+            pendingSince.removeValue(forKey: name)
         }
+        pendingKills.formIntersection(live)
         var merged = snapshot
         for (name, gid) in pendingTags { merged[name] = gid }
         if groupOf != merged { groupOf = merged }
 
         // empty list = server down or query failed; reconciling would dissolve every group
         guard !live.isEmpty else { return }
-        let prunable = seenLive.subtracting(pendingTags.keys)
+        reconciledSnapshots += 1
+        // ponytail: 3 snapshots (~6s) is the "restore finished" guess; after that a layout
+        // name that isn't live is dead, seen this run or not (killed while the app was closed)
+        let known = reconciledSnapshots > 3 ? Set(layouts.values.flatMap(\.allSessions)).union(seenLive) : seenLive
+        let prunable = known.union(pendingKills).subtracting(pendingTags.keys)
         var next = layouts
         for gid in Set(merged.values).union(layouts.keys) {
             let members = merged
-                .filter { $0.value == gid && (live.contains($0.key) || pendingTags[$0.key] != nil) }
+                .filter { $0.value == gid && !pendingKills.contains($0.key)
+                    && (live.contains($0.key) || pendingTags[$0.key] != nil) }
                 .map(\.key).sorted()
             let result = LayoutNode.reconcile(layouts[gid], members: members, prunable: prunable)
             next[gid] = result
@@ -983,8 +1010,15 @@ final class SessionStore: ObservableObject {
     }
 
     private func untag(_ name: String) {
-        actionQueue.async {
-            _ = Shell.tmux("set-option", "-u", "-t", "=" + name + ":", "@promote-group")
+        actionQueue.async { [weak self] in
+            guard let self else { return }
+            // re-check at run time: a split queued ahead of us may have re-grouped it
+            let stillLone = DispatchQueue.main.sync {
+                self.pendingTags[name] == nil && self.layoutGroup(containing: name) == nil
+            }
+            if stillLone {
+                _ = Shell.tmux("set-option", "-u", "-t", "=" + name + ":", "@promote-group")
+            }
         }
     }
 

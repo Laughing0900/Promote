@@ -13,6 +13,9 @@ struct GridView: View {
 
     var body: some View {
         switch node {
+        case .leaf(let tabs, _) where tabs.isEmpty:
+            // only reachable from hand-edited/corrupt gridLayouts; reconcile repairs it next pass
+            Color.clear
         case .leaf(let tabs, let active):
             LeafView(store: store, tabs: tabs, active: tabs[min(max(active, 0), tabs.count - 1)])
         case .split(let axis, let ratio, let first, let second):
@@ -100,6 +103,11 @@ private struct SplitContainer<First: View, Second: View>: View {
     let second: Second
     @State private var dragRatio: Double?
     @State private var dragStart: Double?
+    @State private var cursorPushed = false
+
+    // real layout strip, not an overlay: terminals are AppKit views and win hit-testing
+    // over any SwiftUI overlay that straddles them
+    private let grabWidth: CGFloat = 6
 
     init(axis: SplitAxis, ratio: Double, onCommit: @escaping (Double) -> Void,
          @ViewBuilder first: () -> First, @ViewBuilder second: () -> Second) {
@@ -114,7 +122,7 @@ private struct SplitContainer<First: View, Second: View>: View {
         GeometryReader { geo in
             let horizontal = axis == .horizontal
             let total = horizontal ? geo.size.width : geo.size.height
-            let firstLength = max(0, (total - 1) * (dragRatio ?? ratio))
+            let firstLength = max(0, (total - grabWidth) * (dragRatio ?? ratio))
             let stack = horizontal ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
             stack {
                 first.frame(width: horizontal ? firstLength : nil, height: horizontal ? nil : firstLength)
@@ -125,38 +133,45 @@ private struct SplitContainer<First: View, Second: View>: View {
     }
 
     private func divider(total: CGFloat, horizontal: Bool) -> some View {
-        Rectangle()
-            .fill(Color(nsColor: .separatorColor))
-            .frame(width: horizontal ? 1 : nil, height: horizontal ? nil : 1)
-            .overlay {
-                // 8pt invisible grab zone straddling the 1pt line
-                Color.clear
-                    .frame(width: horizontal ? 8 : nil, height: horizontal ? nil : 8)
-                    .contentShape(Rectangle())
-                    .onHover { inside in
-                        if inside {
-                            (horizontal ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).push()
-                        } else {
-                            NSCursor.pop()
-                        }
-                    }
-                    .gesture(
-                        // global space: the handle moves with the drag, local translation would drift
-                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                            .onChanged { value in
-                                guard total > 0 else { return }
-                                let start = dragStart ?? ratio
-                                dragStart = start
-                                let delta = horizontal ? value.translation.width : value.translation.height
-                                dragRatio = min(max(start + delta / total, LayoutNode.ratioRange.lowerBound),
-                                                LayoutNode.ratioRange.upperBound)
-                            }
-                            .onEnded { _ in
-                                if let dragRatio { onCommit(dragRatio) }
-                                dragRatio = nil
-                                dragStart = nil
-                            }
-                    )
-            }
+        ZStack {
+            Color.clear
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(width: horizontal ? 1 : nil, height: horizontal ? nil : 1)
+        }
+        .frame(width: horizontal ? grabWidth : nil, height: horizontal ? nil : grabWidth)
+        .contentShape(Rectangle())
+        .onHover { setCursor($0, horizontal: horizontal) }
+        // SwiftUI skips onHover(false) when the view goes away mid-hover (split collapsed)
+        .onDisappear { setCursor(false, horizontal: horizontal) }
+        .gesture(
+            // global space: the handle moves with the drag, local translation would drift
+            DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                .onChanged { value in
+                    let usable = total - grabWidth
+                    guard usable > 0 else { return }
+                    let start = dragStart ?? ratio
+                    dragStart = start
+                    let delta = horizontal ? value.translation.width : value.translation.height
+                    dragRatio = min(max(start + delta / usable, LayoutNode.ratioRange.lowerBound),
+                                    LayoutNode.ratioRange.upperBound)
+                }
+                .onEnded { _ in
+                    if let dragRatio { onCommit(dragRatio) }
+                    dragRatio = nil
+                    dragStart = nil
+                }
+        )
+    }
+
+    // push/pop only on change so the cursor stack stays balanced
+    private func setCursor(_ inside: Bool, horizontal: Bool) {
+        guard inside != cursorPushed else { return }
+        cursorPushed = inside
+        if inside {
+            (horizontal ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).push()
+        } else {
+            NSCursor.pop()
+        }
     }
 }
