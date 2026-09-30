@@ -97,7 +97,10 @@ private struct DetailPane: View {
 
     var body: some View {
         Group {
-            if let session = selectedSession {
+            if let name = store.selected, let gid = store.layoutGroup(containing: name),
+               let layout = store.layouts[gid] {
+                GridView(store: store, gid: gid, node: layout)
+            } else if let session = selectedSession {
                 activeSessionView(session)
             } else {
                 EmptyDetailState(newSession: store.newSession)
@@ -166,7 +169,7 @@ struct PromoteApp: App {
             CommandGroup(replacing: .saveItem) {
                 // no .disabled: SwiftUI menu validation goes stale when the AppKit terminal
                 // owns focus, leaving the item stuck disabled. closeActivePane guards instead.
-                Button("Close Pane") { store.closeActivePane() }
+                Button("Close Pane / Tab") { store.closeActivePane() }
                     .keyboardShortcut("w", modifiers: .command)
             }
 
@@ -174,11 +177,20 @@ struct PromoteApp: App {
                 Button("Copy Relative Path") { store.copySelectedRelativePath() }
                     .keyboardShortcut("c", modifiers: [.command, .option])
 
-                Button("Split Pane Right") { store.splitPaneRight() }
+                Button("Split Right (New Session)") { store.splitPaneRight() }
                     .keyboardShortcut("\\", modifiers: .command)
 
-                Button("Split Pane Down") { store.splitPaneDown() }
+                Button("Split Down (New Session)") { store.splitPaneDown() }
                     .keyboardShortcut("\\", modifiers: [.command, .shift])
+
+                Button("New Tab (New Session)") { store.newTab() }
+                    .keyboardShortcut("t", modifiers: .command)
+
+                Button("Next Tab") { store.cycleTab(forward: true) }
+                    .keyboardShortcut("]", modifiers: [.command, .shift])
+
+                Button("Previous Tab") { store.cycleTab(forward: false) }
+                    .keyboardShortcut("[", modifiers: [.command, .shift])
 
                 // force a full reload: drops PR/branch/agent caches so everything re-queries now
                 Button("Force Refresh") { store.forceRefresh() }

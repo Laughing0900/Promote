@@ -63,6 +63,15 @@ final class DroppableTerminalView: LocalProcessTerminalView {
 
     required init?(coder: NSCoder) { fatalError() }
 
+    var onFocus: (() -> Void)?
+
+    // becomeFirstResponder is public-not-open in SwiftTerm; a click is the only way focus
+    // lands here that doesn't already go through store.selected (sidebar, ⌘1–9, tab keys)
+    override func mouseDown(with event: NSEvent) {
+        onFocus?()
+        super.mouseDown(with: event)
+    }
+
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { .copy }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
@@ -79,7 +88,13 @@ final class DroppableTerminalView: LocalProcessTerminalView {
 // SwiftTerm wrapper that attaches to one tmux session
 struct TerminalPane: NSViewRepresentable {
     let session: String
+    // grid leaf: take key focus when this becomes the selected session; report clicks back
+    var isFocused = false
+    var onFocus: (() -> Void)? = nil
     @AppStorage(Settings.fontSizeKey) private var fontSize = 13.0
+
+    final class Coordinator { var wasFocused = false }
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> DroppableTerminalView {
         let term = DroppableTerminalView(frame: .zero)
@@ -99,6 +114,11 @@ struct TerminalPane: NSViewRepresentable {
         )
 
         term.linkRouter.session = session
+        term.onFocus = onFocus
+        context.coordinator.wasFocused = isFocused
+        if isFocused {
+            DispatchQueue.main.async { term.window?.makeFirstResponder(term) }
+        }
         return term
     }
 
@@ -106,7 +126,7 @@ struct TerminalPane: NSViewRepresentable {
     // child, and terminate() cancels the exit monitor before anything waitpid()s it. Without
     // both here, every session switch/close leaks a live `tmux attach-session` client plus a
     // zombie — they pile up until tmux size negotiation blanks the pane and the app wedges.
-    static func dismantleNSView(_ view: DroppableTerminalView, coordinator: ()) {
+    static func dismantleNSView(_ view: DroppableTerminalView, coordinator: Coordinator) {
         let pid = view.process.shellPid
         view.terminate()
         guard pid > 0 else { return }
@@ -121,5 +141,12 @@ struct TerminalPane: NSViewRepresentable {
         if abs(currentSize - fontSize) > 0.001 {
             view.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
         }
+        view.onFocus = onFocus
+        // only on false→true: updateNSView runs every refresh, and grabbing focus each time
+        // would steal it from the sidebar (rename field) every 2s
+        if isFocused && !context.coordinator.wasFocused, let window = view.window, window.firstResponder !== view {
+            DispatchQueue.main.async { window.makeFirstResponder(view) }
+        }
+        context.coordinator.wasFocused = isFocused
     }
 }
