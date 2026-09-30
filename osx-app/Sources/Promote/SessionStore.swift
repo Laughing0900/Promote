@@ -5,7 +5,10 @@ import AppKit
 // owns app state and runs all tmux/git/gh shell work off the main thread
 final class SessionStore: ObservableObject {
     @Published private(set) var sessions: [Session] = []
-    @Published var selected: String?
+    @Published var selected: String? {
+        // any selection path (sidebar, ⌘1–9, terminal click) shows that tab in its grid leaf
+        didSet { if let selected, selected != oldValue { activateTab(selected) } }
+    }
     @Published private(set) var details: [String: SessionDetails] = [:]
     @Published var colors: [String: String] = Settings.colors
     // sidebar order tokens: session names + divider tokens ("§divider:<uuid>")
@@ -19,6 +22,10 @@ final class SessionStore: ObservableObject {
     @Published private(set) var agents: [AgentInfo] = []
     // bumped to force-rebuild the terminal view (fresh SwiftTerm state; clears stuck kitty keyboard flags)
     @Published private(set) var terminalEpoch = 0
+    // session-group gid -> grid layout; membership truth is the tmux @promote-group tag
+    @Published private(set) var layouts: [String: LayoutNode] = Settings.layouts
+    // session -> gid from the last snapshot, merged with in-flight tag writes
+    @Published private(set) var groupOf: [String: String] = [:]
 
     // ponytail: one serial queue keeps shell work + caches simple and deterministic
     private let workerQueue = DispatchQueue(label: "session.store.worker", qos: .userInitiated)
@@ -35,6 +42,9 @@ final class SessionStore: ObservableObject {
     // right after a reboot (sessions restored one by one) can't wipe entries for
     // sessions that just haven't come back yet.
     private var seenLive: Set<String> = []
+    // main-only: name -> gid for tag writes still in flight (new member, and the focused
+    // session on a group's first split). Counts as a member, never pruned.
+    private var pendingTags: [String: String] = [:]
     // detailsQueue-only coalescing state
     private var detailsInFlight = false
     private var detailsPendingSessions: [Session]?
@@ -138,6 +148,11 @@ final class SessionStore: ObservableObject {
     private func performRefreshPass() {
         // one list-panes call feeds both the agent scan and the session list
         let rows = queryPaneRows()
+        // first pane per session carries the session's tag (session option, same on every pane)
+        var snapshotGroups: [String: String] = [:]
+        for row in rows where !row.group.isEmpty && snapshotGroups[row.session] == nil {
+            snapshotGroups[row.session] = row.group
+        }
         // agents first: node-based agent CLIs (pi/opencode) must not count as dev servers
         var snapshotAgents = queryAgents(rows: rows)
         // only real agents suppress the serving flag; server panes ARE the dev servers we want to flag
@@ -152,7 +167,7 @@ final class SessionStore: ObservableObject {
         // publish sessions before the slow git/gh pass so first paint doesn't wait on the network
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.applySnapshot(sessions: snapshotSessions, details: self.details, agents: snapshotAgents)
+            self.applySnapshot(sessions: snapshotSessions, groups: snapshotGroups, details: self.details, agents: snapshotAgents)
         }
 
         // slow git/gh badge pass on its own queue: never blocks the next snapshot or a user action
@@ -214,6 +229,7 @@ final class SessionStore: ObservableObject {
     }
 
     private func applySnapshot(sessions nextSessions: [Session],
+                               groups nextGroups: [String: String],
                                details nextDetails: [String: SessionDetails],
                                agents nextAgents: [AgentInfo]) {
         if sessions != nextSessions {
@@ -249,7 +265,9 @@ final class SessionStore: ObservableObject {
             }
         }
 
-        if let selected, !sessionNames.contains(selected) {
+        reconcileGroups(nextGroups, live: sessionNames)
+
+        if let selected, !sessionNames.contains(selected), pendingTags[selected] == nil {
             self.selected = nextSessions.first?.name
         } else if selected == nil, let first = nextSessions.first {
             self.selected = first.name
@@ -272,21 +290,23 @@ final class SessionStore: ObservableObject {
         let activity: Double
         let pid: String
         let path: String
+        let group: String     // @promote-group tag, "" = solo
         let title: String
     }
 
     private func queryPaneRows() -> [PaneRow] {
         // title last: pane titles can contain tabs; maxSplits keeps them whole
-        let format = "#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{window_activity}\t#{pane_pid}\t#{pane_current_path}\t#{pane_title}"
+        let format = "#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{window_activity}\t#{pane_pid}\t#{pane_current_path}\t#{@promote-group}\t#{pane_title}"
         let out = Shell.tmux("list-panes", "-a", "-F", format) ?? ""
         return out.split(whereSeparator: \.isNewline).compactMap { line in
-            let parts = line.split(separator: "\t", maxSplits: 6, omittingEmptySubsequences: false).map(String.init)
+            let parts = line.split(separator: "\t", maxSplits: 7, omittingEmptySubsequences: false).map(String.init)
             // Shell.run trims trailing whitespace from the whole output, so the LAST row
-            // loses its tab when the title is empty: 6 fields, not 7. Pad instead of dropping.
+            // loses its trailing tabs when group/title are empty. Pad instead of dropping.
             guard parts.count >= 6, !parts[0].isEmpty else { return nil }
-            let title = parts.count > 6 ? parts[6] : ""
+            let group = parts.count > 6 ? parts[6] : ""
+            let title = parts.count > 7 ? parts[7] : ""
             return PaneRow(session: parts[0], pane: parts[1], command: parts[2].lowercased(),
-                           activity: Double(parts[3]) ?? 0, pid: parts[4], path: parts[5], title: title)
+                           activity: Double(parts[3]) ?? 0, pid: parts[4], path: parts[5], group: group, title: title)
         }
     }
 
@@ -696,6 +716,12 @@ final class SessionStore: ObservableObject {
                     self.orderTokens[idx] = next
                     Settings.order = self.orderTokens
                 }
+                if self.layouts.values.contains(where: { $0.contains(old) }) {
+                    self.layouts = self.layouts.mapValues { $0.renaming(old, to: next) }
+                    Settings.layouts = self.layouts
+                }
+                if let gid = self.pendingTags.removeValue(forKey: old) { self.pendingTags[next] = gid }
+                if let gid = self.groupOf.removeValue(forKey: old) { self.groupOf[next] = gid }
 
                 if self.selected == old {
                     self.selected = next
@@ -812,6 +838,60 @@ final class SessionStore: ObservableObject {
         let ordered = hotkeyOrderedSessions
         guard index > 0, index <= ordered.count else { return }
         selected = ordered[index - 1].name
+    }
+
+    // MARK: - Session grid
+
+    func layoutGroup(containing name: String) -> String? {
+        layouts.first { $0.value.contains(name) }?.key
+    }
+
+    private func activateTab(_ name: String) {
+        guard let gid = layoutGroup(containing: name), let layout = layouts[gid] else { return }
+        let next = layout.activating(name)
+        if next != layout { setLayout(next, for: gid) }
+    }
+
+    private func setLayout(_ layout: LayoutNode?, for gid: String) {
+        layouts[gid] = layout
+        Settings.layouts = layouts
+    }
+
+    // main-only: converge layouts onto the tmux tags from this snapshot
+    private func reconcileGroups(_ snapshot: [String: String], live: Set<String>) {
+        for (name, gid) in pendingTags where snapshot[name] == gid {
+            pendingTags.removeValue(forKey: name)
+        }
+        var merged = snapshot
+        for (name, gid) in pendingTags { merged[name] = gid }
+        if groupOf != merged { groupOf = merged }
+
+        // empty list = server down or query failed; reconciling would dissolve every group
+        guard !live.isEmpty else { return }
+        let prunable = seenLive.subtracting(pendingTags.keys)
+        var next = layouts
+        for gid in Set(merged.values).union(layouts.keys) {
+            let members = merged
+                .filter { $0.value == gid && (live.contains($0.key) || pendingTags[$0.key] != nil) }
+                .map(\.key).sorted()
+            let result = LayoutNode.reconcile(layouts[gid], members: members, prunable: prunable)
+            next[gid] = result
+            if result == nil {
+                // lone survivor keeps a stale tag: clear it so it's a plain solo session again
+                let lone = members.filter { pendingTags[$0] == nil }
+                if lone.count == 1 { untag(lone[0]) }
+            }
+        }
+        if next != layouts {
+            layouts = next
+            Settings.layouts = next
+        }
+    }
+
+    private func untag(_ name: String) {
+        actionQueue.async {
+            _ = Shell.tmux("set-option", "-u", "-t", "=" + name + ":", "@promote-group")
+        }
     }
 
     // MARK: - Private helpers
