@@ -581,12 +581,7 @@ struct SidebarView: View {
     }
 
     private func summarizedAgentStatus(for sessionName: String) -> AgentStatus? {
-        let statuses = Set(store.agents(for: sessionName).filter { !$0.isServer }.map(\.status))
-        if statuses.contains(.blocked) { return .blocked }
-        if statuses.contains(.working) { return .working }
-        if statuses.contains(.done) { return .done }
-        if statuses.contains(.idle) { return .idle }
-        return nil
+        store.agentStatus(for: sessionName)
     }
 
     private func commitRename(old: String) {

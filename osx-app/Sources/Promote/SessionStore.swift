@@ -643,31 +643,114 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    // split the selected session's active window horizontally (new pane on the right)
-    func splitPaneRight() {
-        guard let selected else { return }
+    private enum GridPlacement { case right, down, tab }
+
+    // app-level grid split: new tmux session in the focused cwd, tagged into its group.
+    // tmux-native splits stay available via the tmux prefix.
+    func splitPaneRight() { addGridMember(.right) }
+    func splitPaneDown() { addGridMember(.down) }
+    func newTab() { addGridMember(.tab) }
+
+    private func addGridMember(_ placement: GridPlacement) {
+        guard let focused = selected else { return }
+        // ponytail: gid/name picked on main at key-press; two presses faster than one
+        // new-session round trip on a solo session could mint two gids. Not worth a lock.
+        let gid = layoutGroup(containing: focused) ?? groupOf[focused]
+            ?? String(UUID().uuidString.prefix(8)).lowercased()
+        let name = LayoutNode.nextFreeName(base: focused, taken: Set(sessions.map(\.name)).union(pendingTags.keys))
+        let focusedWasTagged = groupOf[focused] != nil
+
         actionQueue.async { [weak self] in
             guard let self else { return }
-            // split-window wants a pane target; "=name:" = exact session, active window
-            // -c expands relative to the target pane, so new pane inherits its cwd
-            _ = Shell.tmux("split-window", "-h", "-t", "=" + selected + ":", "-c", "#{pane_current_path}")
+            let cwd = Shell.tmux("display-message", "-p", "-t", "=" + focused + ":", "#{pane_current_path}")
+                ?? NSHomeDirectory()
+            // create BEFORE selecting: the mounted TerminalPane attaches immediately
+            guard Shell.tmux("new-session", "-d", "-s", name, "-c", cwd) != nil else {
+                self.refresh()
+                return
+            }
+            // sync: layout + pendingTags must exist before the tag lands, or a refresh in
+            // between would reconcile the new member into the wrong leaf
+            DispatchQueue.main.sync {
+                let base = self.layouts[gid] ?? .leaf(tabs: [focused], active: 0)
+                let next: LayoutNode
+                switch placement {
+                case .right: next = base.split(name, beside: focused, axis: .horizontal)
+                case .down: next = base.split(name, beside: focused, axis: .vertical)
+                case .tab: next = base.insertTab(name, into: focused)
+                }
+                self.setLayout(next, for: gid)
+                self.pendingTags[name] = gid
+                if !focusedWasTagged { self.pendingTags[focused] = gid }
+                if !self.sessions.contains(where: { $0.name == name }) {
+                    self.sessions.append(Session(name: name, path: cwd))
+                }
+                self.insertOrderToken(name, after: focused)
+                self.selected = name
+            }
+            let tagged = Shell.tmux("set-option", "-t", "=" + name + ":", "@promote-group", gid) != nil
+                && Shell.tmux("set-option", "-t", "=" + focused + ":", "@promote-group", gid) != nil
+            if !tagged {
+                _ = Shell.tmux("kill-session", "-t", "=" + name)
+                DispatchQueue.main.async {
+                    let rest = self.layouts[gid]?.removing(name)
+                    self.setLayout((rest?.allSessions.count ?? 0) >= 2 ? rest : nil, for: gid)
+                    self.pendingTags.removeValue(forKey: name)
+                    if !focusedWasTagged { self.pendingTags.removeValue(forKey: focused) }
+                    self.selected = focused
+                }
+            }
             self.refresh()
         }
     }
 
-    // split the selected session's active window vertically (new pane below)
-    func splitPaneDown() {
-        guard let selected else { return }
-        actionQueue.async { [weak self] in
-            guard let self else { return }
-            _ = Shell.tmux("split-window", "-v", "-t", "=" + selected + ":", "-c", "#{pane_current_path}")
-            self.refresh()
+    // new member's sidebar row sits right after the session it was split from
+    private func insertOrderToken(_ name: String, after anchor: String) {
+        var tokens = canonicalTokens().filter { $0 != name }
+        let at = tokens.firstIndex(of: anchor).map { $0 + 1 } ?? tokens.count
+        tokens.insert(name, at: at)
+        orderTokens = tokens
+        Settings.order = tokens
+    }
+
+    func cycleTab(forward: Bool) {
+        guard let selected, let gid = layoutGroup(containing: selected),
+              let tabs = layouts[gid]?.leafTabs(containing: selected), tabs.count > 1,
+              let i = tabs.firstIndex(of: selected) else { return }
+        self.selected = tabs[(i + (forward ? 1 : tabs.count - 1)) % tabs.count]
+    }
+
+    func setRatio(gid: String, path: [Bool], _ ratio: Double) {
+        guard let layout = layouts[gid] else { return }
+        setLayout(layout.settingRatio(at: path, ratio), for: gid)
+    }
+
+    // ⌘W / tab ×: a grid tab IS its session — kill it, confirming only if an agent runs there
+    func closeGridSession(_ name: String) {
+        guard !locked.contains(name) else { return }
+        if agents(for: name).contains(where: { !$0.isServer }) {
+            pendingCloseLastPane = name
+        } else {
+            kill(name)
         }
+    }
+
+    func agentStatus(for sessionName: String) -> AgentStatus? {
+        let statuses = Set(agents(for: sessionName).filter { !$0.isServer }.map(\.status))
+        if statuses.contains(.blocked) { return .blocked }
+        if statuses.contains(.working) { return .working }
+        if statuses.contains(.done) { return .done }
+        if statuses.contains(.idle) { return .idle }
+        return nil
     }
 
     // kill the selected session's active pane; tmux kills the session when the last pane dies
     func closeActivePane() {
         guard let selected, !locked.contains(selected) else { return }
+        if layoutGroup(containing: selected) != nil {
+            closeGridSession(selected)
+            return
+        }
         actionQueue.async { [weak self] in
             guard let self else { return }
             let paneCount = Shell.tmux("list-panes", "-t", "=" + selected)?
@@ -734,6 +817,17 @@ final class SessionStore: ObservableObject {
 
     func kill(_ sessionName: String) {
         guard !locked.contains(sessionName) else { return }
+        // grid member: drop its cell now and hand focus to a neighbor. Only here, so a
+        // cancelled confirm dialog never moves focus.
+        if let gid = layoutGroup(containing: sessionName), let layout = layouts[gid] {
+            let rest = layout.removing(sessionName)
+            let tabs = layout.leafTabs(containing: sessionName) ?? []
+            let neighbor = tabs.firstIndex(of: sessionName).flatMap { i -> String? in
+                tabs.count > 1 ? tabs[i + 1 < tabs.count ? i + 1 : i - 1] : nil
+            } ?? rest?.allSessions.first
+            setLayout((rest?.allSessions.count ?? 0) >= 2 ? rest : nil, for: gid)
+            if selected == sessionName, let neighbor { selected = neighbor }
+        }
         actionQueue.async { [weak self] in
             guard let self else { return }
             _ = Shell.tmux("kill-session", "-t", "=" + sessionName)
