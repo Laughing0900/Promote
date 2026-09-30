@@ -11,5 +11,6 @@ let package = Package(
     ],
     targets: [
         .executableTarget(name: "Promote", dependencies: ["SwiftTerm"]),
+        .testTarget(name: "PromoteTests", dependencies: ["Promote"]),
     ]
 )
