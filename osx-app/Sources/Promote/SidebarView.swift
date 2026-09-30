@@ -37,6 +37,10 @@ struct SidebarView: View {
             }
         }
         .background(Color(nsColor: .underPageBackgroundColor).ignoresSafeArea())
+        // only the sidebar turns dropped folders into sessions; the terminal pastes paths
+        .dropDestination(for: URL.self) { urls, _ in
+            store.openDirectories(urls)
+        }
         .overlay(alignment: .bottomLeading) {
             if dragging { bin }
         }
