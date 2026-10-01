@@ -53,6 +53,9 @@ final class DroppableTerminalView: LocalProcessTerminalView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
+        // SwiftTerm installs an NSScroller in super.init. Hiding it also makes
+        // SwiftTerm use the full view width for terminal columns.
+        subviews.compactMap { $0 as? NSScroller }.forEach { $0.isHidden = true }
         registerForDraggedTypes([.fileURL])
         // ⌘-click opens links (SwiftTerm default); plain click is left to the TUI/tmux
         // mouse reporting. Underline shows on hover only while ⌘ is held.
