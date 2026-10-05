@@ -81,6 +81,9 @@ Right-click a session for the full menu:
 | Shortcut | Action |
 |----------|--------|
 | Hold ⌘ | Reveal jump-number badges in the sidebar and a shortcuts hint |
+| Drag / double-click / triple-click | Highlight terminal text / word / line |
+| ⌘C | Copy highlighted terminal text |
+| ⌥ + click / drag | Send mouse gestures to tmux or the terminal app |
 | ⌘N | New session |
 | ⌘1–9 | Jump to session (sidebar order) |
 | ⌘\ | Split pane right |

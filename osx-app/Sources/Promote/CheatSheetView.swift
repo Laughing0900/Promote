@@ -22,6 +22,8 @@ struct CheatSheetView: View {
     // ponytail: static table; update manually when keybindings change
     private let sections: [ShortcutSection] = [
         ShortcutSection(title: "App", subtitle: nil, rows: [
+            ShortcutRow(keys: ["⌘", "C"], description: "Copy highlighted terminal text (drag to select)"),
+            ShortcutRow(keys: ["⌥", "Drag"], description: "Send mouse gestures to tmux / terminal app"),
             ShortcutRow(keys: ["⌘", "N"], description: "New tmux session"),
             ShortcutRow(keys: ["⌘", "\\"], description: "Split right (new session in same folder)"),
             ShortcutRow(keys: ["⌘", "⇧", "\\"], description: "Split down (new session in same folder)"),

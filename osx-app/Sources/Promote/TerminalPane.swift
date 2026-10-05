@@ -50,6 +50,7 @@ final class TerminalLinkRouter: TerminalViewDelegate {
 // Opening a folder as a session is the sidebar's job.
 final class DroppableTerminalView: LocalProcessTerminalView {
     let linkRouter = TerminalLinkRouter()
+    private var scrollMonitor: Any?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -57,22 +58,87 @@ final class DroppableTerminalView: LocalProcessTerminalView {
         // SwiftTerm use the full view width for terminal columns.
         subviews.compactMap { $0 as? NSScroller }.forEach { $0.isHidden = true }
         registerForDraggedTypes([.fileURL])
-        // ⌘-click opens links (SwiftTerm default); plain click is left to the TUI/tmux
-        // mouse reporting. Underline shows on hover only while ⌘ is held.
+        // Keep highlighting local even when tmux enables terminal mouse reporting.
+        // This also preserves the selection when new terminal output arrives.
+        allowMouseReporting = false
+        // ⌘-click opens links; underline shows only while ⌘ is held.
         linkHighlightMode = .hoverWithModifier
         linkRouter.term = self
         terminalDelegate = linkRouter
+        // SwiftTerm's scrollWheel is public but not open, so route wheel events
+        // through a scoped monitor to preserve tmux scrollback with local selection.
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self, let window = self.window, event.window === window,
+                  self.bounds.contains(self.convert(event.locationInWindow, from: nil)) else { return event }
+            let previous = self.allowMouseReporting
+            self.allowMouseReporting = true
+            defer { self.allowMouseReporting = previous }
+            self.scrollWheel(with: event)
+            return nil
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    deinit {
+        if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
+    }
 
     var onFocus: (() -> Void)?
 
     // becomeFirstResponder is public-not-open in SwiftTerm; a click is the only way focus
     // lands here that doesn't already go through store.selected (sidebar, ⌘1–9, tab keys)
+    private var forwardsMouseGesture = false
+    private var selectionMouseDown: NSEvent?
+
     override func mouseDown(with event: NSEvent) {
         onFocus?()
+        window?.makeFirstResponder(self)
+        // Latch at mouse-down so changing modifiers mid-drag cannot send an
+        // unmatched mouse-up to tmux or turn a local selection into copy-mode.
+        forwardsMouseGesture = event.modifierFlags.contains(.option)
+        allowMouseReporting = forwardsMouseGesture
         super.mouseDown(with: event)
+        selectionMouseDown = forwardsMouseGesture || selectionActive ? nil : event
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        allowMouseReporting = forwardsMouseGesture
+        if !forwardsMouseGesture, let start = selectionMouseDown {
+            // SwiftTerm otherwise anchors at the first drag event, skipping the
+            // characters between the initial press and the first mouse movement.
+            super.mouseDragged(with: start)
+            selectionMouseDown = nil
+        }
+        super.mouseDragged(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        allowMouseReporting = forwardsMouseGesture
+        defer {
+            forwardsMouseGesture = false
+            selectionMouseDown = nil
+            allowMouseReporting = false
+        }
+        super.mouseUp(with: event)
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        guard window?.firstResponder === self,
+              modifiers == .command,
+              event.charactersIgnoringModifiers?.lowercased() == "c" else {
+            return super.performKeyEquivalent(with: event)
+        }
+        // Handle before SwiftTerm.keyDown clears the highlight, including when
+        // a terminal app enables enhanced keyboard reporting.
+        copy(self)
+        return true
+    }
+
+    override func copy(_ sender: Any) {
+        guard selectionActive else { return }
+        super.copy(sender)
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { .copy }
