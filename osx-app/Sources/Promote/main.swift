@@ -18,6 +18,8 @@ struct RootView: View {
         } detail: {
             DetailPane(store: store)
                 .navigationTitle("")
+                // Let the tabs occupy the empty titlebar area above the detail column.
+                .ignoresSafeArea(edges: .top)
         }
         .ignoresSafeArea(edges: .bottom)
         .toolbarBackground(.hidden, for: .windowToolbar)
@@ -111,8 +113,7 @@ private struct DetailPane: View {
 
     @ViewBuilder
     private func activeSessionView(_ session: Session) -> some View {
-        TerminalPane(session: session.name)
-            .id("\(session.name)#\(store.terminalEpoch)")
+        SessionTabPane(store: store, tabs: [session.name], active: session.name)
     }
 }
 

@@ -17,7 +17,7 @@ struct GridView: View {
             // only reachable from hand-edited/corrupt gridLayouts; reconcile repairs it next pass
             Color.clear
         case .leaf(let tabs, let active):
-            LeafView(store: store, tabs: tabs, active: tabs[min(max(active, 0), tabs.count - 1)])
+            SessionTabPane(store: store, tabs: tabs, active: tabs[min(max(active, 0), tabs.count - 1)])
         case .split(let axis, let ratio, let first, let second):
             SplitContainer(axis: axis, ratio: ratio, onCommit: { store.setRatio(gid: gid, path: path, $0) }) {
                 GridView(store: store, gid: gid, node: first, path: path + [false])
@@ -28,7 +28,8 @@ struct GridView: View {
     }
 }
 
-private struct LeafView: View {
+// Shared by grid leaves and standalone sessions so even one session has a tab strip.
+struct SessionTabPane: View {
     @ObservedObject var store: SessionStore
     let tabs: [String]
     let active: String
