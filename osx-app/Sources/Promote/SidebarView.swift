@@ -171,8 +171,8 @@ struct SidebarView: View {
         .scrollContentBackground(.hidden)
         .environment(\.defaultMinListRowHeight, 1)
         .contentMargins(.top, 0, for: .scrollContent)
-        // contentMargins clamps at 0; negative frame padding is what actually eats the List's top inset
-        .padding(.top, -34)
+        // Compensate for the List's top inset while leaving 12pt below the toolbar.
+        .padding(.top, -22)
     }
 
     // divider row: optional header above the line; double-click edits the header,

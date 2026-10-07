@@ -17,7 +17,7 @@ struct RootView: View {
                 .navigationSplitViewColumnWidth(min: 220, ideal: 280, max: 420)
         } detail: {
             DetailPane(store: store)
-                .navigationTitle(store.selected ?? "Promote")
+                .navigationTitle("")
         }
         .ignoresSafeArea(edges: .bottom)
         .toolbarBackground(.hidden, for: .windowToolbar)
