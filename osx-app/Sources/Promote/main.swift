@@ -18,8 +18,8 @@ struct RootView: View {
         } detail: {
             DetailPane(store: store)
                 .navigationTitle("")
-                // Let the tabs occupy the empty titlebar area above the detail column.
-                .ignoresSafeArea(edges: .top)
+                // Keep session tabs below the native titlebar so it cannot intercept
+                // their mouse events when starting a tab drag.
         }
         .ignoresSafeArea(edges: .bottom)
         .toolbarBackground(.hidden, for: .windowToolbar)

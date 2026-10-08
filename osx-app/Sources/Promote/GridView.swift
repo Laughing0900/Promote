@@ -58,20 +58,13 @@ private struct TabStrip: View {
     static let dragPrefix = "§tab:"
 
     var body: some View {
-        GeometryReader { geometry in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 2) {
-                    ForEach(tabs, id: \.self) { name in
-                        chip(name)
-                    }
-                    // The scroll view consumes titlebar mouse events. Give its empty
-                    // space a native window drag handle, separate from draggable tabs.
-                    WindowDragArea()
-                        .frame(minWidth: 32, maxWidth: .infinity, maxHeight: .infinity)
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 2) {
+                ForEach(tabs, id: \.self) { name in
+                    chip(name)
                 }
-                .padding(.horizontal, 4)
-                .frame(minWidth: geometry.size.width, minHeight: geometry.size.height)
             }
+            .padding(.horizontal, 4)
         }
         .frame(height: 26)
         .background(dropTargeted ? Color.accentColor.opacity(0.25) : Color(nsColor: .windowBackgroundColor))
@@ -117,20 +110,6 @@ private struct TabStrip: View {
         // and .onDrag never starts
         .simultaneousGesture(TapGesture().onEnded { store.selected = name })
         .onDrag { NSItemProvider(object: (Self.dragPrefix + name) as NSString) }
-    }
-}
-
-// Use AppKit's window dragging so movement follows the cursor across screens.
-private struct WindowDragArea: NSViewRepresentable {
-    func makeNSView(context: Context) -> DragView { DragView() }
-    func updateNSView(_ nsView: DragView, context: Context) {}
-
-    final class DragView: NSView {
-        override var mouseDownCanMoveWindow: Bool { false }
-
-        override func mouseDown(with event: NSEvent) {
-            window?.performDrag(with: event)
-        }
     }
 }
 
