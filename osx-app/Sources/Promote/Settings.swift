@@ -11,6 +11,12 @@ enum Settings {
         set { d.set(newValue, forKey: "sessionColors") }
     }
 
+    // tmux session name -> user-facing chat nickname
+    static var chatNames: [String: String] {
+        get { d.dictionary(forKey: "chatNames") as? [String: String] ?? [:] }
+        set { d.set(newValue, forKey: "chatNames") }
+    }
+
     // divider uuid -> header title
     static var dividerTitles: [String: String] {
         get { d.dictionary(forKey: "dividerTitles") as? [String: String] ?? [:] }

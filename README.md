@@ -30,6 +30,8 @@ swift run Promote
 - Activity panel appears at the bottom when any pane runs an agent CLI; click a row to jump to that session.
 - Dev servers (node, npm, bun, yarn, pnpm, deno, turbo, …) show as a teal **Running** row in the same panel, and a teal dot appears left of the session name.
 
+The window header shows the main tmux session name for the selected group. Right-click a chat tab → **Rename Chat…** to give it a saved nickname (for example, “API fix” or “Review”). Hover over a tab to see its tmux name. Choose **Use tmux Session Name** to reset a nickname. Chat nicknames do not rename the underlying tmux session; sidebar renaming still does.
+
 ## Working with tmux sessions
 
 Promote sits on top of your normal tmux — nothing is hidden or replaced:

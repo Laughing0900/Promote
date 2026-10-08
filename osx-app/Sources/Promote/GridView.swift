@@ -52,6 +52,9 @@ private struct TabStrip: View {
     let active: String
     let focused: Bool
     @State private var dropTargeted = false
+    @State private var renaming: String?
+    @State private var renameText = ""
+    @State private var showRename = false
 
     // ponytail: "§tab:" payload prefix keeps a tab drag from being read as a sidebar order
     // token (sidebar onInsert / bin also accept plain text). Can't collide with a sane session name.
@@ -67,6 +70,16 @@ private struct TabStrip: View {
             .padding(.horizontal, 4)
         }
         .frame(height: 26)
+        .alert("Rename Chat", isPresented: $showRename) {
+            TextField("Chat name", text: $renameText)
+            Button("Cancel", role: .cancel) { renaming = nil }
+            Button("Save") {
+                if let renaming { store.renameChat(renaming, to: renameText) }
+                renaming = nil
+            }
+        } message: {
+            Text("Choose a name to identify this chat. Leave it blank to use the tmux session name.")
+        }
         .background(dropTargeted ? Color.accentColor.opacity(0.25) : Color(nsColor: .windowBackgroundColor))
         // drop a tab from another cell here: it moves into this cell
         .onDrop(of: [.utf8PlainText, .plainText], isTargeted: $dropTargeted) { providers in
@@ -91,7 +104,7 @@ private struct TabStrip: View {
             if let status = store.agentStatus(for: name) {
                 StatusDot(status: status, size: 10)
             }
-            Text(name).font(.caption).lineLimit(1)
+            Text(store.chatName(for: name)).font(.caption).lineLimit(1)
             Button {
                 store.closeGridSession(name)
             } label: {
@@ -110,6 +123,17 @@ private struct TabStrip: View {
         // and .onDrag never starts
         .simultaneousGesture(TapGesture().onEnded { store.selected = name })
         .onDrag { NSItemProvider(object: (Self.dragPrefix + name) as NSString) }
+        .help("tmux: " + name)
+        .contextMenu {
+            Button("Rename Chat…") {
+                renaming = name
+                renameText = store.chatName(for: name)
+                showRename = true
+            }
+            if store.chatNames[name] != nil {
+                Button("Use tmux Session Name") { store.renameChat(name, to: "") }
+            }
+        }
     }
 }
 

@@ -14,6 +14,7 @@ final class SessionStore: ObservableObject {
         }
     }
     @Published private(set) var details: [String: SessionDetails] = [:]
+    @Published private(set) var chatNames: [String: String] = Settings.chatNames
     @Published var colors: [String: String] = Settings.colors
     // sidebar order tokens: session names + divider tokens ("§divider:<uuid>")
     @Published private(set) var orderTokens: [String] = Settings.order
@@ -116,6 +117,15 @@ final class SessionStore: ObservableObject {
     // visible rows only: one number per group
     var hotkeyOrderedSessions: [Session] {
         sidebarItems.compactMap { if case .session(let s) = $0 { return s } else { return nil } }
+    }
+
+    // Chat labels never become tmux targets or drag identifiers.
+    func chatName(for session: String) -> String { chatNames[session] ?? session }
+
+    func renameChat(_ session: String, to proposed: String) {
+        let name = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
+        chatNames[session] = name.isEmpty || name == session ? nil : name
+        Settings.chatNames = chatNames
     }
 
     // MARK: - Group rows (one sidebar row per session group)
@@ -325,6 +335,10 @@ final class SessionStore: ObservableObject {
         if !nextSessions.isEmpty {
             let dead: (String) -> Bool = { [seenLive] in
                 !sessionNames.contains($0) && seenLive.contains($0)
+            }
+            if chatNames.keys.contains(where: dead) {
+                chatNames = chatNames.filter { !dead($0.key) }
+                Settings.chatNames = chatNames
             }
             if colors.keys.contains(where: dead) {
                 colors = colors.filter { !dead($0.key) }
@@ -866,6 +880,10 @@ final class SessionStore: ObservableObject {
             }
 
             DispatchQueue.main.async {
+                if let chatName = self.chatNames.removeValue(forKey: old) {
+                    self.chatNames[next] = chatName
+                    Settings.chatNames = self.chatNames
+                }
                 if let color = self.colors.removeValue(forKey: old) {
                     self.colors[next] = color
                     self.saveColors()

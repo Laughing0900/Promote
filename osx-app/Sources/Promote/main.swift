@@ -17,7 +17,7 @@ struct RootView: View {
                 .navigationSplitViewColumnWidth(min: 220, ideal: 280, max: 420)
         } detail: {
             DetailPane(store: store)
-                .navigationTitle("")
+                .navigationTitle(store.selected.map { store.groupRow(of: $0) } ?? "Promote")
                 // Keep session tabs below the native titlebar so it cannot intercept
                 // their mouse events when starting a tab drag.
         }
