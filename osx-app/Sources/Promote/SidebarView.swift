@@ -126,7 +126,9 @@ struct SidebarView: View {
             dragging = false
         }
         RunLoop.main.add(timer, forMode: .common)
-        return NSItemProvider(object: token as NSString)
+        return SessionStore.dividerId(token) == nil
+            ? SessionDrag.provider(token, text: token)
+            : NSItemProvider(object: token as NSString)
     }
 
     private var sessionList: some View {
@@ -470,6 +472,8 @@ struct SidebarView: View {
         Button("Rename") {
             beginRename(session)
         }
+
+        SessionSplitMenu(store: store, name: session.name)
 
         Menu("Color") {
             Button("None") {

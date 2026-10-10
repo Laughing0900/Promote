@@ -30,7 +30,11 @@ swift run Promote
 - Activity panel appears at the bottom when any pane runs an agent CLI; click a row to jump to that session.
 - Dev servers (node, npm, bun, yarn, pnpm, deno, turbo, …) show as a teal **Running** row in the same panel, and a teal dot appears left of the session name.
 
-The window header shows the main tmux session name for the selected group. Right-click a chat tab → **Rename Chat…** to give it a saved nickname (for example, “API fix” or “Review”). Hover over a tab to see its tmux name. Choose **Use tmux Session Name** to reset a nickname. Chat nicknames do not rename the underlying tmux session; sidebar renaming still does.
+The left side of the window header shows the main tmux session name for the selected group. Right-click a chat tab → **Rename** to give it a saved nickname (for example, “API fix” or “Review”). Hover over a tab to see its tmux name. Choose **Use tmux Session Name** to reset a nickname. Chat nicknames do not rename the underlying tmux session; sidebar renaming still does.
+
+Drag a session from the sidebar or a tab onto a terminal pane: the outer quarter of each edge previews a split above, below, left, or right; the center groups it as a tab. A labeled preview shows **Merge as tabs** in the center or the split direction at an edge. Drag tabs left or right to sort them; the insertion marker shows the saved position. Dropping onto another tab strip merges the session at that position. Moving the last tab out of a pane automatically closes that pane. Right-click a tab or sidebar session for **New Tab** (in the clicked pane), **Split Right**, or **Split & Group**: Split moves the existing tab into a new pane in that direction, leaving an empty drop area if it was the only tab. Empty panes accept session drops and have a Close Empty Pane button. Move rearranges sessions beside another pane, and Group With combines them as tabs.
+
+**×** closes its tab’s session; **⌘W** closes the active tab/session. Other sessions stay running in their existing panes, and focus stays in the current group while sessions remain. A pane disappears automatically when its last session closes or moves elsewhere. There is no manual Close Pane action. Locked sessions are protected, and sessions with running agents use the existing confirmation dialog.
 
 ## Working with tmux sessions
 
@@ -90,7 +94,7 @@ Right-click a session for the full menu:
 | ⌘1–9 | Jump to session (sidebar order) |
 | ⌘\ | Split pane right |
 | ⌘⇧\ | Split pane down |
-| ⌘W | Close current pane |
+| ⌘W | Close active tab/session |
 | ⌘⇧R | Force refresh (reload PR / branch / agent status) |
 | ⌘+ / ⌘− / ⌘0 | Terminal font size bigger / smaller / reset |
 | ⌘/ | Keyboard shortcuts cheat sheet |

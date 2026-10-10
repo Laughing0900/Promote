@@ -178,13 +178,87 @@ final class SessionStore: ObservableObject {
         for member in groupMembers(of: name) { kill(member) }
     }
 
-    // drag a tab into the leaf showing `target`
-    func moveTab(_ name: String, toLeafOf target: String) {
-        guard let gid = layoutGroup(containing: target), let layout = layouts[gid], layout.contains(name) else { return }
-        let next = layout.moving(name, toLeafOf: target)
-        guard next != layout else { return }
-        setLayout(next, for: gid)
+    func canDropSession(_ name: String, onto target: String) -> Bool {
+        guard sessions.contains(where: { $0.name == name }), sessions.contains(where: { $0.name == target }) else { return false }
+        return true
+    }
+
+    func moveTab(_ name: String, toLeafOf target: String, anchor: TabDropAnchor) {
+        guard canDropSession(name, onto: target) else { return }
+        let tabs = layoutGroup(containing: target).flatMap { layouts[$0]?.leafTabs(containing: target) } ?? [target]
+        guard let index = anchor.index(in: tabs) else { return }
+        moveTab(name, toLeafOf: target, at: index)
+    }
+
+    func moveTab(_ name: String, toLeafOf target: String, at index: Int? = nil) {
+        if let index, let gid = layoutGroup(containing: target), let layout = layouts[gid],
+           layout.leafTabs(containing: target)?.contains(name) == true {
+            // Sorting within a pane leaves focus and the mounted terminal unchanged.
+            setLayout(layout.reorderingTab(name, inLeafOf: target, at: index), for: gid)
+            return
+        }
+        moveSession(name, beside: target, edge: nil)
+        if let index, let gid = layoutGroup(containing: target), let layout = layouts[gid] {
+            setLayout(layout.reorderingTab(name, inLeafOf: target, at: index), for: gid)
+        }
+    }
+
+    func moveTarget(for name: String, direction: SplitDirection) -> String? {
+        guard let gid = layoutGroup(containing: name) else { return nil }
+        return layouts[gid]?.moveTarget(for: name, direction: direction)
+    }
+
+    func moveSession(_ name: String, direction: SplitDirection) {
+        guard let target = moveTarget(for: name, direction: direction) else { return }
+        moveSession(name, beside: target, edge: direction)
+    }
+
+    // Move one session, preserving the other tabs and collapsing its emptied source pane.
+    func moveSession(_ name: String, beside destination: String, edge: SplitDirection?) {
+        guard canDropSession(name, onto: destination) else { return }
+        if name == destination {
+            if let edge { splitSession(name, direction: edge) }
+            return
+        }
+        let sourceID = layoutGroup(containing: name)
+        let target = destination
+        let targetID = layoutGroup(containing: target) ?? UUID().uuidString.lowercased()
+        let base = layouts[targetID] ?? .leaf(tabs: [target], active: 0)
+        let next = base.placing(name, beside: target, edge: edge)
+        if sourceID == targetID {
+            setLayout(next.isPersistentLayout ? next : nil, for: targetID)
+            if !next.isPersistentLayout { for member in next.allSessions { untag(member) } }
+            selected = name
+            return
+        }
+
+        // Reserve membership before writing tags, so refresh cannot put the tab back.
+        for member in [name, target] {
+            pendingTags[member] = targetID
+            pendingSince[member] = Date()
+        }
+        if let sourceID, let source = layouts[sourceID] {
+            let rest = source.removing(name)
+            setLayout(rest?.isPersistentLayout == true ? rest : nil, for: sourceID)
+            if let rest, rest.allSessions.count == 1 { untag(rest.allSessions[0]) }
+        }
+        setLayout(next, for: targetID)
         selected = name
+        actionQueue.async { [weak self] in
+            guard let self else { return }
+            for member in [name, target] {
+                let tagged = Shell.tmux("set-option", "-t", "=" + member + ":", "@promote-group", targetID) != nil
+                if !tagged {
+                    DispatchQueue.main.async {
+                        if self.pendingTags[member] == targetID {
+                            self.pendingTags.removeValue(forKey: member)
+                            self.pendingSince.removeValue(forKey: member)
+                        }
+                    }
+                }
+            }
+            self.refresh()
+        }
     }
 
     func details(for sessionName: String) -> SessionDetails {
@@ -323,6 +397,12 @@ final class SessionStore: ObservableObject {
         }
 
         let sessionNames = Set(nextSessions.map(\.name))
+        // Keep the old layout long enough to find a neighbor when tmux itself
+        // closes the selected session (exit / kill-session outside the app).
+        let survivingFocus = selected.flatMap { name -> String? in
+            guard !sessionNames.contains(name), let gid = layoutGroup(containing: name) else { return nil }
+            return layouts[gid]?.survivingSession(afterClosing: name, live: sessionNames.subtracting(pendingKills))
+        }
 
         // drop stored metadata for sessions that no longer exist (closed/killed).
         // only prune names this app run actually saw alive: after a reboot the first
@@ -358,7 +438,7 @@ final class SessionStore: ObservableObject {
         reconcileGroups(nextGroups, live: sessionNames)
 
         if let selected, !sessionNames.contains(selected), pendingTags[selected] == nil {
-            self.selected = nextSessions.first?.name
+            self.selected = survivingFocus ?? nextSessions.first?.name
         } else if selected == nil, let first = nextSessions.first {
             self.selected = first.name
         }
@@ -733,16 +813,60 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    private enum GridPlacement { case right, down, tab }
+    private enum GridPlacement { case split(SplitDirection), tab }
 
     // app-level grid split: new tmux session in the focused cwd, tagged into its group.
     // tmux-native splits stay available via the tmux prefix.
-    func splitPaneRight() { addGridMember(.right) }
-    func splitPaneDown() { addGridMember(.down) }
+    func splitPaneRight() { addGridMember(.split(.right)) }
+    func splitPaneDown() { addGridMember(.split(.down)) }
     func newTab() { addGridMember(.tab) }
+    func newTab(beside name: String) { addGridMember(.tab, beside: name) }
 
-    private func addGridMember(_ placement: GridPlacement) {
-        guard let focused = selected else { return }
+    // Split the clicked tab out of its own pane, leaving an empty pane if it was alone.
+    func splitSession(_ name: String, direction: SplitDirection) {
+        guard sessions.contains(where: { $0.name == name }) else { return }
+        let existingID = layoutGroup(containing: name)
+        let gid = existingID ?? groupOf[name] ?? UUID().uuidString.lowercased()
+        let previous = layouts[gid]
+        let base = previous ?? .leaf(tabs: [name], active: 0)
+        let next = base.splittingOff(name, direction: direction)
+        setLayout(next, for: gid)
+        selected = name
+        guard existingID == nil else { return }
+        pendingTags[name] = gid
+        pendingSince[name] = Date()
+        actionQueue.async { [weak self] in
+            guard let self else { return }
+            let tagged = Shell.tmux("set-option", "-t", "=" + name + ":", "@promote-group", gid) != nil
+            if !tagged {
+                DispatchQueue.main.async {
+                    if self.pendingTags[name] == gid {
+                        self.pendingTags.removeValue(forKey: name)
+                        self.pendingSince.removeValue(forKey: name)
+                        if self.layouts[gid] == next { self.setLayout(previous, for: gid) }
+                    }
+                }
+            }
+            self.refresh()
+        }
+    }
+
+    func fillEmptyPane(gid: String, path: [Bool], with name: String) {
+        guard let layout = layouts[gid], layout.isEmptyPane(at: path),
+              sessions.contains(where: { $0.name == name }) else { return }
+        if layoutGroup(containing: name) != gid {
+            guard let anchor = layout.allSessions.first else { return }
+            moveSession(name, beside: anchor, edge: nil)
+        }
+        guard let current = layouts[gid], current.contains(name), current.isEmptyPane(at: path) else { return }
+        let next = current.fillingEmptyPane(at: path, with: name)
+        setLayout(next.isPersistentLayout ? next : nil, for: gid)
+        if !next.isPersistentLayout { for member in next.allSessions { untag(member) } }
+        selected = name
+    }
+
+    private func addGridMember(_ placement: GridPlacement, beside session: String? = nil) {
+        guard let focused = session ?? selected else { return }
         // ponytail: gid/name picked on main at key-press; two presses faster than one
         // new-session round trip on a solo session could mint two gids. Not worth a lock.
         let gid = layoutGroup(containing: focused) ?? groupOf[focused]
@@ -765,8 +889,7 @@ final class SessionStore: ObservableObject {
                 let base = self.layouts[gid] ?? .leaf(tabs: [focused], active: 0)
                 let next: LayoutNode
                 switch placement {
-                case .right: next = base.split(name, beside: focused, axis: .horizontal)
-                case .down: next = base.split(name, beside: focused, axis: .vertical)
+                case .split(let direction): next = base.split(name, beside: focused, direction: direction)
                 case .tab: next = base.insertTab(name, into: focused)
                 }
                 self.setLayout(next, for: gid)
@@ -788,7 +911,7 @@ final class SessionStore: ObservableObject {
                 _ = Shell.tmux("kill-session", "-t", "=" + name)
                 DispatchQueue.main.async {
                     let rest = self.layouts[gid]?.removing(name)
-                    self.setLayout((rest?.allSessions.count ?? 0) >= 2 ? rest : nil, for: gid)
+                    self.setLayout(rest?.isPersistentLayout == true ? rest : nil, for: gid)
                     self.pendingTags.removeValue(forKey: name)
                     if !focusedWasTagged { self.pendingTags.removeValue(forKey: focused) }
                     self.selected = focused
@@ -819,8 +942,7 @@ final class SessionStore: ObservableObject {
         setLayout(layout.settingRatio(at: path, ratio), for: gid)
     }
 
-    // ⌘W / tab ×: a grid tab IS its session — kill it, confirming only if an agent runs there
-    func closeGridSession(_ name: String) {
+    func requestKillSession(_ name: String) {
         guard !locked.contains(name) else { return }
         if agents(for: name).contains(where: { !$0.isServer }) {
             pendingCloseLastPane = name
@@ -838,25 +960,10 @@ final class SessionStore: ObservableObject {
         return nil
     }
 
-    // kill the selected session's active pane; tmux kills the session when the last pane dies
-    func closeActivePane() {
-        guard let selected, !locked.contains(selected) else { return }
-        if layoutGroup(containing: selected) != nil {
-            closeGridSession(selected)
-            return
-        }
-        actionQueue.async { [weak self] in
-            guard let self else { return }
-            let paneCount = Shell.tmux("list-panes", "-t", "=" + selected)?
-                .split(separator: "\n").count ?? 0
-            if paneCount <= 1 {
-                // last pane: closing kills the session — route through the kill confirm dialog
-                DispatchQueue.main.async { self.pendingCloseLastPane = selected }
-                return
-            }
-            _ = Shell.tmux("kill-pane", "-t", "=" + selected + ":")
-            self.refresh()
-        }
+    // ⌘W closes only the focused session, leaving sibling tabs and panes running.
+    func closeActiveSession() {
+        guard let selected else { return }
+        requestKillSession(selected)
     }
 
     // ⌘⌥C: selected session's path, home-abbreviated to ~/…
@@ -925,11 +1032,11 @@ final class SessionStore: ObservableObject {
         if let gid = layoutGroup(containing: sessionName), let layout = layouts[gid] {
             pendingKills.insert(sessionName)
             let rest = layout.removing(sessionName)
-            let tabs = layout.leafTabs(containing: sessionName) ?? []
-            let neighbor = tabs.firstIndex(of: sessionName).flatMap { i -> String? in
-                tabs.count > 1 ? tabs[i + 1 < tabs.count ? i + 1 : i - 1] : nil
-            } ?? rest?.allSessions.first
-            setLayout((rest?.allSessions.count ?? 0) >= 2 ? rest : nil, for: gid)
+            let neighbor = layout.survivingSession(
+                afterClosing: sessionName,
+                live: Set(sessions.map(\.name)).subtracting(pendingKills)
+            )
+            setLayout(rest?.isPersistentLayout == true ? rest : nil, for: gid)
             if selected == sessionName, let neighbor { selected = neighbor }
         }
         actionQueue.async { [weak self] in

@@ -29,7 +29,7 @@ struct CheatSheetView: View {
             ShortcutRow(keys: ["⌘", "⇧", "\\"], description: "Split down (new session in same folder)"),
             ShortcutRow(keys: ["⌘", "T"], description: "New tab (new session in same folder)"),
             ShortcutRow(keys: ["⌘", "⇧", "[ ]"], description: "Previous / next tab"),
-            ShortcutRow(keys: ["⌘", "W"], description: "Close pane (grid tab: kill its session)"),
+            ShortcutRow(keys: ["⌘", "W"], description: "Close active tab/session"),
             ShortcutRow(keys: ["⌘", "⇧", "R"], description: "Force refresh (reload PR / branch / agent status)"),
             ShortcutRow(keys: ["⌘", "⌥", "C"], description: "Copy relative path (~/…) of selected session"),
             ShortcutRow(keys: ["⌘", "1-9"], description: "Jump to session (sidebar order)"),

@@ -17,7 +17,16 @@ struct RootView: View {
                 .navigationSplitViewColumnWidth(min: 220, ideal: 280, max: 420)
         } detail: {
             DetailPane(store: store)
-                .navigationTitle(store.selected.map { store.groupRow(of: $0) } ?? "Promote")
+                .navigationTitle("")
+                .toolbar {
+                    ToolbarItem(placement: .navigation) {
+                        Text(store.selected.map { store.groupRow(of: $0) } ?? "Promote")
+                            .font(.headline)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: 240, alignment: .leading)
+                    }
+                }
                 // Keep session tabs below the native titlebar so it cannot intercept
                 // their mouse events when starting a tab drag.
         }
@@ -169,8 +178,8 @@ struct PromoteApp: App {
             // replace the default Close (⌘W closes the window otherwise)
             CommandGroup(replacing: .saveItem) {
                 // no .disabled: SwiftUI menu validation goes stale when the AppKit terminal
-                // owns focus, leaving the item stuck disabled. closeActivePane guards instead.
-                Button("Close Pane / Tab") { store.closeActivePane() }
+                // owns focus, leaving the item stuck disabled. closeActiveSession guards instead.
+                Button("Close Active Tab") { store.closeActiveSession() }
                     .keyboardShortcut("w", modifiers: .command)
             }
 

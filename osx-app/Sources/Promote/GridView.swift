@@ -14,8 +14,7 @@ struct GridView: View {
     var body: some View {
         switch node {
         case .leaf(let tabs, _) where tabs.isEmpty:
-            // only reachable from hand-edited/corrupt gridLayouts; reconcile repairs it next pass
-            Color.clear
+            EmptySessionPane(store: store, gid: gid, path: path)
         case .leaf(let tabs, let active):
             SessionTabPane(store: store, tabs: tabs, active: tabs[min(max(active, 0), tabs.count - 1)])
         case .split(let axis, let ratio, let first, let second):
@@ -24,6 +23,32 @@ struct GridView: View {
             } second: {
                 GridView(store: store, gid: gid, node: second, path: path + [true])
             }
+        }
+    }
+}
+
+private struct EmptySessionPane: View {
+    @ObservedObject var store: SessionStore
+    let gid: String
+    let path: [Bool]
+    @State private var dropTargeted = false
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "rectangle.split.2x1").font(.title2)
+            Text("Drop a session here").font(.callout)
+        }
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(dropTargeted ? Color.accentColor.opacity(0.2) : Color(nsColor: .windowBackgroundColor))
+        .contentShape(Rectangle())
+        .onDrop(of: [SessionDrag.type], isTargeted: $dropTargeted) { providers in
+            guard let provider = providers.first else { return false }
+            provider.loadDataRepresentation(forTypeIdentifier: SessionDrag.type) { data, _ in
+                guard let data, let name = String(data: data, encoding: .utf8) else { return }
+                DispatchQueue.main.async { store.fillEmptyPane(gid: gid, path: path, with: name) }
+            }
+            return true
         }
     }
 }
@@ -40,6 +65,10 @@ struct SessionTabPane: View {
             TabStrip(store: store, tabs: tabs, active: active, focused: focused)
             TerminalPane(session: active, isFocused: focused, onFocus: { [store] in
                 if store.selected != active { store.selected = active }
+            }, canDropSession: { [store] name in
+                store.canDropSession(name, onto: active)
+            }, onDropSession: { [store] name, edge in
+                store.moveSession(name, beside: active, edge: edge)
             })
             .id("\(active)#\(store.terminalEpoch)")
         }
@@ -51,25 +80,98 @@ private struct TabStrip: View {
     let tabs: [String]
     let active: String
     let focused: Bool
-    @State private var dropTargeted = false
+    @State private var insertionIndex: Int?
+    @State private var dropEndTimer: Timer?
+    @State private var tabFrames: [String: CGRect] = [:]
+    @Namespace private var tabCoordinates
     @State private var renaming: String?
     @State private var renameText = ""
     @State private var showRename = false
 
     // ponytail: "§tab:" payload prefix keeps a tab drag from being read as a sidebar order
     // token (sidebar onInsert / bin also accept plain text). Can't collide with a sane session name.
-    static let dragPrefix = "§tab:"
+    static let dragPrefix = SessionDrag.tabPrefix
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 2) {
-                ForEach(tabs, id: \.self) { name in
-                    chip(name)
+        HStack(spacing: 0) {
+            GeometryReader { viewport in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 2) {
+                        ForEach(Array(tabs.enumerated()), id: \.element) { index, name in
+                            chip(name)
+                                .fixedSize(horizontal: true, vertical: false)
+                                .background {
+                                    GeometryReader { geometry in
+                                        Color.clear.preference(key: TabFramePreference.self,
+                                            value: [name: geometry.frame(in: .named(tabCoordinates))])
+                                    }
+                                    .allowsHitTesting(false)
+                                }
+                                .onDrop(of: SessionDrag.acceptedTypes, delegate: TabStripDropDelegate(
+                                    tabs: tabs, frames: tabFrames, targetTab: name, insertionIndex: $insertionIndex,
+                                    onDrop: { name, anchor in store.moveTab(name, toLeafOf: active, anchor: anchor) }
+                                ))
+                                .overlay(alignment: .leading) {
+                                    if insertionIndex == index { insertionMarker.offset(x: -2) }
+                                }
+                                .overlay(alignment: .trailing) {
+                                    if index == tabs.count - 1 && insertionIndex == tabs.count {
+                                        insertionMarker.offset(x: 2)
+                                    }
+                                }
+                        }
+                        Text(insertionIndex == nil ? "" : "Drop as tab")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: 80)
+                            .allowsHitTesting(false)
+                    }
+                    .padding(.horizontal, 4)
+                    .frame(minWidth: viewport.size.width, minHeight: 26, alignment: .leading)
+                    .contentShape(Rectangle())
+                    // Pointer and tab bounds must share the scroll-content coordinate space.
+                    .coordinateSpace(name: tabCoordinates)
+                    .onDrop(of: SessionDrag.acceptedTypes, delegate: TabStripDropDelegate(
+                        tabs: tabs, frames: tabFrames, insertionIndex: $insertionIndex,
+                        onDrop: { name, anchor in store.moveTab(name, toLeafOf: active, anchor: anchor) }
+                    ))
                 }
             }
-            .padding(.horizontal, 4)
+            if focused {
+                Button {
+                    store.newTab(beside: active)
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .medium))
+                        .frame(width: 28, height: 26)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("New tab in this panel (⌘T)")
+                .accessibilityLabel("New tab in this panel")
+            }
         }
         .frame(height: 26)
+        .onPreferenceChange(TabFramePreference.self) { tabFrames = $0 }
+        .onChange(of: insertionIndex != nil) { _, showingFeedback in
+            dropEndTimer?.invalidate()
+            dropEndTimer = nil
+            guard showingFeedback else { return }
+            // SwiftUI can omit dropExited when another destination handles the drop
+            // or the drag is cancelled. Track release even in the drag run loop.
+            let timer = Timer(timeInterval: 0.1, repeats: true) { timer in
+                guard NSEvent.pressedMouseButtons == 0 else { return }
+                timer.invalidate()
+                insertionIndex = nil
+                dropEndTimer = nil
+            }
+            dropEndTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            clearDropFeedback()
+        }
+        .onDisappear { clearDropFeedback() }
         .alert("Rename Chat", isPresented: $showRename) {
             TextField("Chat name", text: $renameText)
             Button("Cancel", role: .cancel) { renaming = nil }
@@ -80,52 +182,56 @@ private struct TabStrip: View {
         } message: {
             Text("Choose a name to identify this chat. Leave it blank to use the tmux session name.")
         }
-        .background(dropTargeted ? Color.accentColor.opacity(0.25) : Color(nsColor: .windowBackgroundColor))
-        // drop a tab from another cell here: it moves into this cell
-        .onDrop(of: [.utf8PlainText, .plainText], isTargeted: $dropTargeted) { providers in
-            guard let provider = providers.first else { return false }
-            provider.loadObject(ofClass: NSString.self) { object, _ in
-                guard let payload = object as? String, payload.hasPrefix(Self.dragPrefix) else { return }
-                let name = String(payload.dropFirst(Self.dragPrefix.count))
-                DispatchQueue.main.async { store.moveTab(name, toLeafOf: active) }
-            }
-            return true
-        }
+        .background(insertionIndex != nil ? Color.accentColor.opacity(0.2) : Color(nsColor: .windowBackgroundColor))
         .overlay(alignment: .top) {
             // focused leaf marker
             Rectangle().fill(focused ? Color.accentColor : .clear).frame(height: 2)
+                .allowsHitTesting(false)
         }
+    }
+
+    private func clearDropFeedback() {
+        dropEndTimer?.invalidate()
+        dropEndTimer = nil
+        insertionIndex = nil
+    }
+
+    private var insertionMarker: some View {
+        Capsule().fill(Color.accentColor).frame(width: 3, height: 24).allowsHitTesting(false)
     }
 
     private func chip(_ name: String) -> some View {
         let isActive = name == active
         return HStack(spacing: 5) {
-            Circle().fill(store.color(of: name) ?? .secondary.opacity(0.4)).frame(width: 7, height: 7)
-            if let status = store.agentStatus(for: name) {
-                StatusDot(status: status, size: 10)
+            HStack(spacing: 5) {
+                Circle().fill(store.color(of: name) ?? .secondary.opacity(0.4)).frame(width: 7, height: 7)
+                if let status = store.agentStatus(for: name) {
+                    StatusDot(status: status, size: 10)
+                }
+                Text(store.chatName(for: name)).font(.caption).lineLimit(1)
             }
-            Text(store.chatName(for: name)).font(.caption).lineLimit(1)
+            .contentShape(Rectangle())
+            .simultaneousGesture(TapGesture().onEnded { store.selected = name })
             Button {
-                store.closeGridSession(name)
+                store.requestKillSession(name)
             } label: {
                 Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .help(store.locked.contains(name) ? "Locked" : "Kill session")
+            .help(store.locked.contains(name) ? "Locked" : "Close session")
             .disabled(store.locked.contains(name))
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
         .background(isActive ? Color.primary.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 5))
         .contentShape(Rectangle())
-        // simultaneousGesture, not onTapGesture: an exclusive tap swallows the mouse-down
-        // and .onDrag never starts
-        .simultaneousGesture(TapGesture().onEnded { store.selected = name })
-        .onDrag { NSItemProvider(object: (Self.dragPrefix + name) as NSString) }
+        .onDrag { SessionDrag.provider(name, text: Self.dragPrefix + name) }
         .help("tmux: " + name)
         .contextMenu {
-            Button("Rename Chat…") {
+            SessionSplitMenu(store: store, name: name)
+            Divider()
+            Button("Rename") {
                 renaming = name
                 renameText = store.chatName(for: name)
                 showRename = true
@@ -133,6 +239,84 @@ private struct TabStrip: View {
             if store.chatNames[name] != nil {
                 Button("Use tmux Session Name") { store.renameChat(name, to: "") }
             }
+            Divider()
+            Button("Kill Session", role: .destructive) { store.requestKillSession(name) }
+                .disabled(store.locked.contains(name))
+        }
+    }
+}
+
+private struct TabFramePreference: PreferenceKey {
+    static var defaultValue: [String: CGRect] { [:] }
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+private struct TabStripDropDelegate: DropDelegate {
+    let tabs: [String]
+    let frames: [String: CGRect]
+    var targetTab: String? = nil
+    @Binding var insertionIndex: Int?
+    let onDrop: (String, TabDropAnchor) -> Void
+
+    func validateDrop(info: DropInfo) -> Bool { info.hasItemsConforming(to: SessionDrag.acceptedTypes) }
+    func dropEntered(info: DropInfo) { insertionIndex = index(info) }
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        insertionIndex = index(info)
+        // NSItemProvider sources can advertise copy only. The store performs
+        // the actual move, so accepting copy does not duplicate the session.
+        return DropProposal(operation: insertionIndex == nil ? .forbidden : .copy)
+    }
+    func dropExited(info: DropInfo) { insertionIndex = nil }
+    func performDrop(info: DropInfo) -> Bool {
+        defer { insertionIndex = nil }
+        guard let gap = index(info), let anchor = TabDropPosition.anchor(at: gap, in: tabs),
+              let provider = info.itemProviders(for: SessionDrag.acceptedTypes).first else { return false }
+        SessionDrag.loadName(from: provider) { name in
+            guard let name else { return }
+            DispatchQueue.main.async { onDrop(name, anchor) }
+        }
+        return true
+    }
+    private func index(_ info: DropInfo) -> Int? {
+        if let targetTab {
+            guard let tabIndex = tabs.firstIndex(of: targetTab),
+                  let width = frames[targetTab]?.width, width > 0 else { return nil }
+            // DropInfo is local to this chip; scrolling cannot shift the midpoint.
+            return tabIndex + (info.location.x < width / 2 ? 0 : 1)
+        }
+        return TabDropPosition.index(x: info.location.x, tabs: tabs, frames: frames)
+    }
+}
+
+// Shared by tab and sidebar menus; every action targets the clicked session.
+struct SessionSplitMenu: View {
+    @ObservedObject var store: SessionStore
+    let name: String
+
+    var body: some View {
+        Button("New Tab") { store.newTab(beside: name) }
+        Divider()
+        Button("Split Right") { store.splitSession(name, direction: .right) }
+        Menu("Split & Group") {
+            ForEach(SplitDirection.allCases, id: \.self) { direction in
+                Button("Split " + direction.title) { store.splitSession(name, direction: direction) }
+            }
+            Divider()
+            ForEach(SplitDirection.allCases, id: \.self) { direction in
+                Button("Move " + direction.moveTitle) { store.moveSession(name, direction: direction) }
+                    .disabled(store.moveTarget(for: name, direction: direction) == nil)
+            }
+            Divider()
+            Menu("Group With") {
+                ForEach(store.sessions.filter { $0.name != name }) { session in
+                    Button(store.chatName(for: session.name) + " (" + session.name + ")") {
+                        store.moveTab(name, toLeafOf: session.name)
+                    }
+                }
+            }
+            .disabled(store.sessions.count < 2)
         }
     }
 }

@@ -46,6 +46,33 @@ final class TerminalLinkRouter: TerminalViewDelegate {
     func rangeChanged(source: TerminalView, startY: Int, endY: Int) { term?.rangeChanged(source: source, startY: startY, endY: endY) }
 }
 
+// Draw above SwiftTerm's renderer without intercepting its drag or mouse events.
+final class SessionDropPreviewView: NSView {
+    var message = "Merge as tabs" { didSet { needsDisplay = true } }
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let outline = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 8, yRadius: 8)
+        NSColor.controlAccentColor.withAlphaComponent(0.25).setFill()
+        outline.fill()
+        NSColor.controlAccentColor.setStroke()
+        outline.lineWidth = 2
+        outline.stroke()
+
+        let text = NSAttributedString(string: message, attributes: [
+            .font: NSFont.systemFont(ofSize: 14, weight: .semibold), .foregroundColor: NSColor.white
+        ])
+        let size = text.size()
+        let width = min(size.width + 28, max(0, bounds.width - 12))
+        let badge = NSRect(x: bounds.midX - width / 2, y: bounds.midY - 17, width: width, height: 34)
+        NSColor.controlAccentColor.setFill()
+        NSBezierPath(roundedRect: badge, xRadius: 8, yRadius: 8).fill()
+        text.draw(in: NSRect(x: badge.minX + 14, y: badge.midY - size.height / 2,
+                            width: max(0, width - 28), height: size.height))
+    }
+}
+
 // SwiftTerm has no drop support; files and folders paste shell-escaped paths.
 // Opening a folder as a session is the sidebar's job.
 final class DroppableTerminalView: LocalProcessTerminalView {
@@ -57,7 +84,7 @@ final class DroppableTerminalView: LocalProcessTerminalView {
         // SwiftTerm installs an NSScroller in super.init. Hiding it also makes
         // SwiftTerm use the full view width for terminal columns.
         subviews.compactMap { $0 as? NSScroller }.forEach { $0.isHidden = true }
-        registerForDraggedTypes([.fileURL])
+        registerForDraggedTypes([.fileURL, .string, SessionDrag.pasteboardType])
         // Keep highlighting local even when tmux enables terminal mouse reporting.
         // This also preserves the selection when new terminal output arrives.
         allowMouseReporting = false
@@ -141,9 +168,77 @@ final class DroppableTerminalView: LocalProcessTerminalView {
         super.copy(sender)
     }
 
-    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { .copy }
+    var canDropSession: ((String) -> Bool)?
+    var onDropSession: ((String, SplitDirection?) -> Void)?
+    private var dropPreview: SessionDropPreviewView?
+
+    private func dropEdge(_ sender: NSDraggingInfo) -> SplitDirection? {
+        let point = convert(sender.draggingLocation, from: nil)
+        let x = Double((point.x - bounds.minX) / max(bounds.width, 1))
+        let y = Double((point.y - bounds.minY) / max(bounds.height, 1))
+        return SplitDirection.dropEdge(x: x, y: isFlipped ? y : 1 - y)
+    }
+
+    private func updateDrop(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard let name = SessionDrag.name(from: sender.draggingPasteboard) else {
+            clearDropPreview()
+            return sender.draggingPasteboard.types?.contains(.fileURL) == true ? .copy : []
+        }
+        guard canDropSession?(name) == true else { clearDropPreview(); return [] }
+        let operation = sessionDropOperation(sender)
+        guard !operation.isEmpty else { clearDropPreview(); return [] }
+        let edge = dropEdge(sender)
+        var rect = bounds.insetBy(dx: 3, dy: 3)
+        switch edge {
+        case .left: rect.size.width /= 2
+        case .right: rect.size.width /= 2; rect.origin.x += rect.width
+        case .up:
+            rect.size.height /= 2
+            if !isFlipped { rect.origin.y += rect.height }
+        case .down:
+            rect.size.height /= 2
+            if isFlipped { rect.origin.y += rect.height }
+        case nil: break
+        }
+        let preview = dropPreview ?? SessionDropPreviewView(frame: rect)
+        preview.frame = rect
+        preview.message = edge.map { "Split " + $0.title } ?? "Merge as tabs"
+        preview.wantsLayer = true
+        preview.layer?.zPosition = 1000
+        // A terminal renderer is itself a subview; a root sublayer can sit behind it.
+        addSubview(preview, positioned: .above, relativeTo: nil)
+        dropPreview = preview
+        preview.needsDisplay = true
+        return operation
+    }
+
+    private func sessionDropOperation(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let allowed = sender.draggingSourceOperationMask
+        if allowed.contains(.move) { return .move }
+        // SwiftUI can advertise copy for an NSItemProvider drag. The store owns
+        // the layout move; AppKit must negotiate an operation the source supports.
+        return allowed.contains(.copy) ? .copy : []
+    }
+
+    private func clearDropPreview() {
+        dropPreview?.removeFromSuperview()
+        dropPreview = nil
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { updateDrop(sender) }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { updateDrop(sender) }
+    override func draggingExited(_ sender: NSDraggingInfo?) { clearDropPreview() }
+    override func draggingEnded(_ sender: NSDraggingInfo) { clearDropPreview() }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        defer { clearDropPreview() }
+        if let name = SessionDrag.name(from: sender.draggingPasteboard) {
+            guard canDropSession?(name) == true, !sessionDropOperation(sender).isEmpty, let onDropSession else { return false }
+            let edge = dropEdge(sender)
+            // Defer layout changes until AppKit has finished delivering the drop.
+            DispatchQueue.main.async { onDropSession(name, edge) }
+            return true
+        }
         let urls = sender.draggingPasteboard.readObjects(
             forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]
         ) as? [URL] ?? []
@@ -160,6 +255,8 @@ struct TerminalPane: NSViewRepresentable {
     // grid leaf: take key focus when this becomes the selected session; report clicks back
     var isFocused = false
     var onFocus: (() -> Void)? = nil
+    var canDropSession: ((String) -> Bool)? = nil
+    var onDropSession: ((String, SplitDirection?) -> Void)? = nil
     @AppStorage(Settings.fontSizeKey) private var fontSize = 13.0
 
     final class Coordinator { var wasFocused = false }
@@ -184,6 +281,8 @@ struct TerminalPane: NSViewRepresentable {
 
         term.linkRouter.session = session
         term.onFocus = onFocus
+        term.canDropSession = canDropSession
+        term.onDropSession = onDropSession
         context.coordinator.wasFocused = isFocused
         if isFocused {
             DispatchQueue.main.async { term.window?.makeFirstResponder(term) }
@@ -211,6 +310,8 @@ struct TerminalPane: NSViewRepresentable {
             view.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
         }
         view.onFocus = onFocus
+        view.canDropSession = canDropSession
+        view.onDropSession = onDropSession
         // only on false→true: updateNSView runs every refresh, and grabbing focus each time
         // would steal it from the sidebar (rename field) every 2s
         if isFocused && !context.coordinator.wasFocused, let window = view.window, window.firstResponder !== view {
