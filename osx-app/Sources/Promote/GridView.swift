@@ -42,13 +42,31 @@ private struct EmptySessionPane: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(dropTargeted ? Color.accentColor.opacity(0.2) : Color(nsColor: .windowBackgroundColor))
         .contentShape(Rectangle())
-        .onDrop(of: [SessionDrag.type], isTargeted: $dropTargeted) { providers in
+        .onDrop(of: SessionDrag.acceptedTypes, isTargeted: $dropTargeted) { providers in
             guard let provider = providers.first else { return false }
-            provider.loadDataRepresentation(forTypeIdentifier: SessionDrag.type) { data, _ in
-                guard let data, let name = String(data: data, encoding: .utf8) else { return }
+            // Sidebar drags carry a bare name; nothing else is droppable on an empty pane.
+            SessionDrag.loadName(from: provider, plainText: true) { name in
+                guard let name else { return }
                 DispatchQueue.main.async { store.fillEmptyPane(gid: gid, path: path, with: name) }
             }
             return true
+        }
+        .overlay(alignment: .topTrailing) {
+            Button {
+                store.closeEmptyPane(gid: gid, path: path)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .frame(width: 26, height: 26)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Close empty pane")
+            .accessibilityLabel("Close empty pane")
+        }
+        .contextMenu {
+            Button("Close Pane") { store.closeEmptyPane(gid: gid, path: path) }
         }
     }
 }

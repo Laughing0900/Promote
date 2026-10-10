@@ -865,6 +865,14 @@ final class SessionStore: ObservableObject {
         selected = name
     }
 
+    // Dismiss an intentional empty pane; a lone survivor becomes a plain solo session again.
+    func closeEmptyPane(gid: String, path: [Bool]) {
+        guard let layout = layouts[gid], layout.isEmptyPane(at: path) else { return }
+        let rest = layout.closingEmptyPane(at: path)
+        setLayout(rest?.isPersistentLayout == true ? rest : nil, for: gid)
+        if let rest, !rest.isPersistentLayout { for member in rest.allSessions { untag(member) } }
+    }
+
     private func addGridMember(_ placement: GridPlacement, beside session: String? = nil) {
         guard let focused = session ?? selected else { return }
         // ponytail: gid/name picked on main at key-press; two presses faster than one

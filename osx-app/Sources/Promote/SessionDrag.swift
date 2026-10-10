@@ -4,24 +4,31 @@ import UniformTypeIdentifiers
 // A private type separates session moves from terminal text/file drops and sidebar dividers.
 enum SessionDrag {
     static let type = "com.laughing.promote.session"
-    static let acceptedTypes = [type, UTType.utf8PlainText.identifier, UTType.plainText.identifier]
+    // ponytail: an SPM executable has no Info.plist to declare the type in, so declare it
+    // at runtime and hand SwiftUI UTTypes, never identifier strings: UTType(type) is nil
+    // for an undeclared id, so a string-based onDrop can silently accept nothing.
+    static let utType = UTType(exportedAs: type)
+    static let acceptedTypes: [UTType] = [utType, .utf8PlainText, .plainText]
     static let tabPrefix = "§tab:"
     static let pasteboardType = NSPasteboard.PasteboardType(type)
 
     static func provider(_ name: String, text: String) -> NSItemProvider {
         let provider = NSItemProvider(object: text as NSString)
-        provider.registerDataRepresentation(forTypeIdentifier: type, visibility: .all) { completion in
+        provider.registerDataRepresentation(for: utType, visibility: .all) { completion in
             completion(Data(name.utf8), nil)
             return nil
         }
         return provider
     }
 
-    static func loadName(from provider: NSItemProvider, completion: @escaping (String?) -> Void) {
+    // plainText: also accept a bare session name (the sidebar's payload). Only safe where
+    // dropped text has no other meaning, e.g. an empty pane; a terminal would paste it.
+    static func loadName(from provider: NSItemProvider, plainText: Bool = false,
+                         completion: @escaping (String?) -> Void) {
         func loadText() {
             guard provider.canLoadObject(ofClass: NSString.self) else { completion(nil); return }
             _ = provider.loadObject(ofClass: NSString.self) { object, _ in
-                completion((object as? String).flatMap(nameFromTabText))
+                completion((object as? String).flatMap { nameFromText($0, plainText: plainText) })
             }
         }
         guard provider.hasItemConformingToTypeIdentifier(type) else { loadText(); return }
@@ -38,6 +45,12 @@ enum SessionDrag {
         guard text.hasPrefix(tabPrefix) else { return nil }
         let name = String(text.dropFirst(tabPrefix.count))
         return name.isEmpty ? nil : name
+    }
+
+    private static func nameFromText(_ text: String, plainText: Bool) -> String? {
+        if let name = nameFromTabText(text) { return name }
+        guard plainText, !text.isEmpty, !text.contains(where: \.isNewline) else { return nil }
+        return text
     }
 
     static func name(from pasteboard: NSPasteboard) -> String? {
