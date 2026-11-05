@@ -259,12 +259,18 @@ struct TerminalPane: NSViewRepresentable {
     var onDropSession: ((String, SplitDirection?) -> Void)? = nil
     @AppStorage(Settings.fontSizeKey) private var fontSize = 13.0
 
+    // ponytail: hardcoded family; falls back to SF Mono if not installed. Upgrade: settings picker.
+    static func terminalFont(size: CGFloat) -> NSFont {
+        NSFont(name: "ObelMonoMasked-Regular", size: size)
+            ?? .monospacedSystemFont(ofSize: size, weight: .regular)
+    }
+
     final class Coordinator { var wasFocused = false }
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> DroppableTerminalView {
         let term = DroppableTerminalView(frame: .zero)
-        term.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        term.font = Self.terminalFont(size: fontSize)
         // debug builds print "Info: Unhandled DECSET ..." for escape codes
         // SwiftTerm doesn't know (2031 color-scheme, 7727 app-escape); silence
         term.getTerminal().silentLog = true
@@ -307,7 +313,7 @@ struct TerminalPane: NSViewRepresentable {
     func updateNSView(_ view: DroppableTerminalView, context: Context) {
         let currentSize = view.font.pointSize
         if abs(currentSize - fontSize) > 0.001 {
-            view.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
+            view.font = Self.terminalFont(size: fontSize)
         }
         view.onFocus = onFocus
         view.canDropSession = canDropSession
