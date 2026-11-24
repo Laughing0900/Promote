@@ -460,28 +460,30 @@ final class SessionStore: ObservableObject {
         let activity: Double
         let pid: String
         let path: String
+        let active: Bool      // pane is the active pane of the session's active window
         let group: String     // @promote-group tag, "" = solo
         let title: String
     }
 
     private func queryPaneRows() -> [PaneRow] {
         // title last: pane titles can contain tabs; maxSplits keeps them whole
-        let format = "#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{window_activity}\t#{pane_pid}\t#{pane_current_path}\t#{@promote-group}\t#{pane_title}"
+        let format = "#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{window_activity}\t#{pane_pid}\t#{pane_current_path}\t#{?#{&&:#{window_active},#{pane_active}},1,0}\t#{@promote-group}\t#{pane_title}"
         let out = Shell.tmux("list-panes", "-a", "-F", format) ?? ""
         return out.split(whereSeparator: \.isNewline).compactMap { line in
-            let parts = line.split(separator: "\t", maxSplits: 7, omittingEmptySubsequences: false).map(String.init)
+            let parts = line.split(separator: "\t", maxSplits: 8, omittingEmptySubsequences: false).map(String.init)
             // Shell.run trims trailing whitespace from the whole output, so the LAST row
             // loses its trailing tabs when group/title are empty. Pad instead of dropping.
-            guard parts.count >= 6, !parts[0].isEmpty else { return nil }
-            let group = parts.count > 6 ? parts[6] : ""
-            let title = parts.count > 7 ? parts[7] : ""
+            guard parts.count >= 7, !parts[0].isEmpty else { return nil }
+            let group = parts.count > 7 ? parts[7] : ""
+            let title = parts.count > 8 ? parts[8] : ""
             return PaneRow(session: parts[0], pane: parts[1], command: parts[2].lowercased(),
-                           activity: Double(parts[3]) ?? 0, pid: parts[4], path: parts[5], group: group, title: title)
+                           activity: Double(parts[3]) ?? 0, pid: parts[4], path: parts[5],
+                           active: parts[6] == "1", group: group, title: title)
         }
     }
 
     private func querySessions(rows: [PaneRow], agentPanes: Set<String>) -> [Session] {
-        // path comes from the FIRST pane (leftmost), not the active one
+        // path comes from the session's active pane (active window), so `cd` anywhere shows up
 
         // ponytail: "server" = any pane whose foreground command looks like a JS runtime/runner.
         // No port, no listen check; upgrade path is lsof -sTCP:LISTEN against pane pids.
@@ -491,10 +493,13 @@ final class SessionStore: ObservableObject {
                 (serverCommands.contains { row.command.hasPrefix($0) } || scriptShells.contains(row.command))
         }.map(\.session))
 
+        let activePath = Dictionary(rows.filter(\.active).map { ($0.session, $0.path) },
+                                    uniquingKeysWith: { first, _ in first })
         var seen = Set<String>()
         var parsed: [Session] = rows.compactMap { row in
             guard seen.insert(row.session).inserted else { return nil }
-            return Session(name: row.session, path: row.path, serving: serving.contains(row.session))
+            return Session(name: row.session, path: activePath[row.session] ?? row.path,
+                           serving: serving.contains(row.session))
         }
 
         let manualOrder = Settings.order
