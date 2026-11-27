@@ -99,6 +99,20 @@ Right-click a session for the full menu:
 | ⌘+ / ⌘− / ⌘0 | Terminal font size bigger / smaller / reset |
 | ⌘/ | Keyboard shortcuts cheat sheet |
 
+## Live agent status
+
+By default Promote reads an agent's state off the screen. For exact status, turn on **Promote → Live Agent Status** for each agent you use:
+
+| Agent | What is installed |
+|-------|-------------------|
+| Claude Code | `~/.config/promote/claudecode/hook` + hook entries in `~/.claude/settings.json` |
+| Codex | `~/.config/promote/codex/hook` + hook entries in `~/.codex/hooks.json` (Codex asks you to trust a new hook once) |
+| pi | `~/.pi/agent/extensions/promote.ts` |
+
+Each reports to its own tmux pane and does nothing outside tmux. Promote only touches its own entries and files, keeps a one-time `*.before-promote` backup of each config file it edits, and turning an agent off removes them. Sessions already running pick it up on their next start. The sources live in [`extension/`](extension).
+
+Claude Code needs none of this to be accurate: Promote also reads Claude's own session records (`~/.claude/sessions`), which say when a session is busy, idle or waiting for you.
+
 ## Agent status colors
 
 | Icon | Color | Status | Meaning |

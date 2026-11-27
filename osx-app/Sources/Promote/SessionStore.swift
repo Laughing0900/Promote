@@ -462,23 +462,25 @@ final class SessionStore: ObservableObject {
         let path: String
         let active: Bool      // pane is the active pane of the session's active window
         let group: String     // @promote-group tag, "" = solo
+        let hook: String      // @promote-status pane option written by the Claude Code hook, "" = none
         let title: String
     }
 
     private func queryPaneRows() -> [PaneRow] {
         // title last: pane titles can contain tabs; maxSplits keeps them whole
-        let format = "#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{window_activity}\t#{pane_pid}\t#{pane_current_path}\t#{?#{&&:#{window_active},#{pane_active}},1,0}\t#{@promote-group}\t#{pane_title}"
+        let format = "#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{window_activity}\t#{pane_pid}\t#{pane_current_path}\t#{?#{&&:#{window_active},#{pane_active}},1,0}\t#{@promote-group}\t#{@promote-status}\t#{pane_title}"
         let out = Shell.tmux("list-panes", "-a", "-F", format) ?? ""
         return out.split(whereSeparator: \.isNewline).compactMap { line in
-            let parts = line.split(separator: "\t", maxSplits: 8, omittingEmptySubsequences: false).map(String.init)
+            let parts = line.split(separator: "\t", maxSplits: 9, omittingEmptySubsequences: false).map(String.init)
             // Shell.run trims trailing whitespace from the whole output, so the LAST row
-            // loses its trailing tabs when group/title are empty. Pad instead of dropping.
+            // loses its trailing tabs when group/hook/title are empty. Pad instead of dropping.
             guard parts.count >= 7, !parts[0].isEmpty else { return nil }
             let group = parts.count > 7 ? parts[7] : ""
-            let title = parts.count > 8 ? parts[8] : ""
+            let hook = parts.count > 8 ? parts[8] : ""
+            let title = parts.count > 9 ? parts[9] : ""
             return PaneRow(session: parts[0], pane: parts[1], command: parts[2].lowercased(),
                            activity: Double(parts[3]) ?? 0, pid: parts[4], path: parts[5],
-                           active: parts[6] == "1", group: group, title: title)
+                           active: parts[6] == "1", group: group, hook: hook, title: title)
         }
     }
 
@@ -601,10 +603,25 @@ final class SessionStore: ObservableObject {
 
         var found: [AgentInfo] = []
         found.reserveCapacity(rows.count)
+        // read once per pass, and only when a claude pane is found
+        var registry: [String: AgentStatus]?
 
         for row in rows {
             if let tool = resolveAgentTool(command: row.command, panePid: row.pid, children: childrenByPpid) {
-                let status = classifyAgentStatus(pane: row.pane, title: row.title, activity: row.activity, now: now)
+                // hook report first, then Claude's own session registry, then the scrape
+                // (see AgentHooks.resolve)
+                let hook = HookReport.parse(row.hook, tool: tool)
+                var live: AgentStatus?
+                if tool == "claude" {
+                    if registry == nil { registry = ClaudeRegistry.statuses() }
+                    live = registry?[row.pane]
+                }
+                if hook != nil || live == .working || live == .blocked { agentWorked.insert(row.pane) }
+                // the registry only says "quiet": done if this pane has worked, as the scrape has it
+                if live == .idle, agentWorked.contains(row.pane) { live = .done }
+                let status = AgentHooks.resolve(hook: hook, registry: live, now: now) {
+                    classifyAgentStatus(pane: row.pane, title: row.title, activity: row.activity, now: now)
+                }
                 found.append(AgentInfo(paneId: row.pane, session: row.session, tool: tool, status: status))
             } else if serverCommands.contains(where: { row.command.hasPrefix($0) }) {
                 // dev server: show in the panel with a green "running" dot (status unused, rendered green)

@@ -44,6 +44,10 @@ fi
 
 cp .build/release/Promote "$APP/Contents/MacOS/Promote"
 
+# agent status extensions (hook scripts, pi extension) the app installs from its menu
+mkdir -p "$APP/Contents/Resources"
+cp -R ../extension "$APP/Contents/Resources/extension"
+
 # Stable signature keeps TCC grants (Desktop access etc.) across rebuilds; ad-hoc re-prompts every build.
 # One-time setup: Keychain Access > Certificate Assistant > Create a Certificate...
 #   Name: promote-dev, Identity Type: Self-Signed Root, Certificate Type: Code Signing

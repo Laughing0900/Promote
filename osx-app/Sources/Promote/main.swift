@@ -146,6 +146,9 @@ private struct EmptyDetailState: View {
 struct PromoteApp: App {
     @StateObject private var store = SessionStore()
     @AppStorage(Settings.fontSizeKey) private var fontSize = 13.0
+    @State private var liveStatus = Set(AgentHooks.Agent.allCases.filter(AgentHooks.isInstalled))
+
+    init() { AgentHooks.upgrade() }
 
     var body: some Scene {
         WindowGroup {
@@ -164,6 +167,24 @@ struct PromoteApp: App {
                     store.showCheatSheet.toggle()
                 }
                 .keyboardShortcut("/", modifiers: .command)
+
+                // installs/removes each agent's piece of /extension (see AgentHooks)
+                Menu("Live Agent Status") {
+                    ForEach(AgentHooks.Agent.allCases) { agent in
+                        Toggle(agent.title, isOn: Binding(
+                            get: { liveStatus.contains(agent) },
+                            set: { on in
+                                do {
+                                    if on { try AgentHooks.install(agent) } else { try AgentHooks.uninstall(agent) }
+                                } catch {
+                                    NSAlert(error: error).runModal()
+                                }
+                                liveStatus = Set(AgentHooks.Agent.allCases.filter(AgentHooks.isInstalled))
+                            }
+                        ))
+                        .disabled(!FileManager.default.fileExists(atPath: agent.configDir.path))
+                    }
+                }
             }
 
             CommandMenu("View") {
